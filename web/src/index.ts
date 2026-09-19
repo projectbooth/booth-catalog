@@ -1,0 +1,12 @@
+// Public entry point for @projectbooth/catalog-ui (ADR 0030). Anything booth-design (or any future
+// consumer) needs is re-exported here — internal components/helpers under src/views,
+// src/components, src/api, etc. are not part of the public API and can change freely.
+//
+// Consumers must also import this package's stylesheet once
+// (`@projectbooth/catalog-ui/dist/style.css`) — see this repo's README for why it's a separate
+// import rather than auto-injected.
+import "./library.css";
+
+export { CatalogApp } from "./CatalogApp";
+export type { CatalogAppProps } from "./CatalogApp";
+export type { WorkspaceRole } from "./types";
