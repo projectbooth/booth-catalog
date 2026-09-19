@@ -8,8 +8,8 @@
 // that — NATS subjects, the envelope, acking — lives in internal/events; this package sees
 // only already-parsed Upserts, so it is testable with no broker at all.
 //
-// The event payload this package implements is a proposal awaiting coordinator sign-off:
-// see docs/decisions/0001-dashboard-event-payload.md.
+// The event payload this package implements is ratified as ADR 0046; see also
+// docs/decisions/0001-dashboard-event-payload.md for the reasoning behind it.
 package dashboards
 
 import (

@@ -1,11 +1,9 @@
 # 0001: The `dashboard.created` / `updated` / `deleted` event payload
 
-Status: **proposed** — needs the coordinator's sign-off, and agreement from the
-`booth-superset`, `booth-metabase` and `booth-streamlit` agents, before it becomes a
-contract addition. `ARCHITECTURE.md` §7 item 11 asks for exactly this: propose a shape and
-bring it back rather than each side guessing. This repo already implements it
-(`internal/events`, `internal/dashboards`), so the proposal is testable, not hypothetical —
-but it is cheap to change now and expensive after three publishers ship against it.
+Status: **ratified** as `booth-architecture` ADR 0046 (`decisions/0046-dashboard-event-payload-schema.md`),
+essentially exactly as proposed here — the schema and consumer semantics below needed no changes. The
+ADR is the contract now; this file is kept as the detailed reasoning behind it, and the code in
+`internal/events` / `internal/dashboards` already implements the ratified text.
 
 ## Context
 

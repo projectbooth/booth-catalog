@@ -77,15 +77,13 @@ published an event.
 over-claiming header is rejected with 403 (ADR 0041; verified against real Keycloak).
 `oidc.groupsClaim` must match booth-core's or every request is refused.
 
-## The dashboard event contract (a proposal — read this)
+## The dashboard event contract
 
-The payload for `dashboard.created` / `updated` / `deleted` is the open question in
-`ARCHITECTURE.md` §7 item 11. This repo implements a **proposal**, written up in
-[docs/decisions/0001](docs/decisions/0001-dashboard-event-payload.md): full-state upserts, three
-kinds of lineage source (`dataset`, `location`, `external`), last-writer-wins by `publishedAt`,
-tombstoned deletes. **It needs coordinator sign-off and agreement from the three dashboard-module
-agents before it becomes a contract addition.** `go run ./hack/publish-dashboard-event -h` sends
-one by hand.
+The payload for `dashboard.created` / `updated` / `deleted` is **ratified as ADR 0046** (this repo's
+[docs/decisions/0001](docs/decisions/0001-dashboard-event-payload.md) is the reasoning behind it):
+full-state upserts, three kinds of lineage source (`dataset`, `location`, `external`),
+last-writer-wins by `publishedAt`, tombstoned deletes. `internal/events` and `internal/dashboards`
+implement it as ratified. `go run ./hack/publish-dashboard-event -h` sends one by hand.
 
 ## Running and testing
 
@@ -121,12 +119,14 @@ matches everything beneath it to this one component, and the UI reads its own su
 
 ## Read before deploying
 
-- [0001](docs/decisions/0001-dashboard-event-payload.md) — the proposed `dashboard.*` payload. **Proposed.**
-- [0002](docs/decisions/0002-location-verification-stays-in-the-ui.md) — registering a dataset does not verify its location; the UI checks live through storage.
-- [0003](docs/decisions/0003-owner-identity.md) — "owner" is a free-form string; there is no user directory. **Flagged.**
-- [0004](docs/decisions/0004-catalog-write-permissions.md) — `editor`/`owner` write, `viewer` reads. **Proposed.**
-- [0005](docs/decisions/0005-event-publisher-trust.md) — **nothing authenticates who publishes to the event bus**, so anyone who can reach NATS can forge dashboards in any workspace. **Flagged; a `booth-core` concern.** Restrict NATS with a NetworkPolicy until it's addressed.
-- [0006](docs/decisions/0006-code-source-stored-inline.md) — code source lives in the catalog's database, which is what makes versions immutable.
+All six were ruled on by the coordinator (2026-09-19):
+
+- [0001](docs/decisions/0001-dashboard-event-payload.md) — the `dashboard.*` payload. **Ratified as ADR 0046**, as proposed.
+- [0002](docs/decisions/0002-location-verification-stays-in-the-ui.md) — registering a dataset does not verify its location; the UI checks live through storage. **Accepted as-is.**
+- [0003](docs/decisions/0003-owner-identity.md) — "owner" is a free-form string. **Resolved as ADR 0047:** `booth-core` is building a minimal user directory (its action item); the string is correct for v0.
+- [0004](docs/decisions/0004-catalog-write-permissions.md) — `editor`/`owner` write, `viewer` reads. **Ratified as ADR 0048.**
+- [0005](docs/decisions/0005-event-publisher-trust.md) — **nothing yet authenticates who publishes to the event bus**, so anyone who can reach NATS can forge dashboards in any workspace. **Resolved as ADR 0049**, but the fix lives in `booth-core`; until it ships, restrict NATS with a NetworkPolicy.
+- [0006](docs/decisions/0006-code-source-stored-inline.md) — code source lives in the catalog's database, which is what makes versions immutable. **Accepted as-is.**
 
 ## Not done
 
@@ -135,7 +135,7 @@ matches everything beneath it to this one component, and the UI reads its own su
   end to end: the real binary against real Keycloak + PostgreSQL + NATS (tokens, roles, header forgery,
   lineage, stale/delete events) and the UI in a real browser through the dev harness.
 - **The npm package is built and tested but not published**, and `booth-design` doesn't register it yet.
-- **The `dashboard.*` payload is unratified** (0001), and no dashboard module exists to publish it.
+- **No dashboard module exists yet to publish `dashboard.*` events** (the payload is ratified, ADR 0046); the dashboard path has only been exercised with the dev publisher.
 - **`booth-pipeline`'s code reference is unsettled**, deliberately: the catalog exposes entry ID, version
   label and a `latest` alias and defines no "runnable" contract (ADR 0010; see 0006). Nothing to coordinate
   against yet — `booth-pipeline` isn't started.

@@ -1,7 +1,10 @@
 # 0005: Nothing verifies who published a `dashboard.*` event
 
-Status: **flagged** — a real gap found while building the subscriber, in `booth-core`'s
-territory rather than this repo's. Not fixable here; needs a coordinator decision.
+Status: **resolved** as `booth-architecture` ADR 0049 (`decisions/0049-event-bus-authentication.md`): a
+fleet-wide gap, fixable only in `booth-core` (bus authentication and per-subject publish permissions), not
+closable from this repo. This repo keeps the mitigations described below — subject/workspace/event-type
+consistency checks, bounded input, and `path` validation — which is the right amount of defense from the
+consumer's side. Until `booth-core` ships the fix, the deployment note under "Consequences until then" still applies.
 
 ## What was found
 

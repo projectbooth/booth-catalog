@@ -13,8 +13,8 @@
 //     to the Processor and acks, retries or terminates them by its verdict. It is tested
 //     against a real embedded nats-server.
 //
-// The payload shape implemented here is a proposal awaiting coordinator sign-off:
-// docs/decisions/0001-dashboard-event-payload.md.
+// The payload shape implemented here is ratified as ADR 0046; see also
+// docs/decisions/0001-dashboard-event-payload.md for the reasoning behind it.
 package events
 
 import (

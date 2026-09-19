@@ -1,7 +1,7 @@
 # 0004: Who may change the catalog — workspace `editor`/`owner`; `viewer` reads
 
-Status: **proposed** — follows ADR 0038's precedent rather than inventing anything, but the
-brief doesn't state it, so it is written down for the coordinator to confirm.
+Status: **ratified** as `booth-architecture` ADR 0048 (`decisions/0048-catalog-write-permissions.md`),
+exactly as built here. No changes.
 
 ## Context
 

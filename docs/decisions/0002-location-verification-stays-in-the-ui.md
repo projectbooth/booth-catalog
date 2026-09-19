@@ -1,7 +1,7 @@
 # 0002: Registering a dataset does not verify its storage location; the UI checks it live
 
-Status: **implemented** — a consequence of ADR 0045 and ADR 0039, recorded because it is a
-visible behavior a future reader (or `booth-pipeline`) may expect to be otherwise.
+Status: **accepted as-is** by the coordinator; no ADR needed. It is a consequence of ADR 0045 and ADR 0039,
+recorded because it is a visible behavior a future reader (or `booth-pipeline`) may expect to be otherwise.
 
 ## Context
 

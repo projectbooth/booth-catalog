@@ -1,7 +1,7 @@
 # 0006: Code versions store their source inside the catalog
 
-Status: **implemented** — a design choice within the brief's scope; recorded because
-`booth-pipeline` will want to know where code actually lives.
+Status: **accepted as-is** by the coordinator; no ADR needed. A design choice within the brief's scope,
+recorded because `booth-pipeline` will want to know where code actually lives.
 
 ## Context
 

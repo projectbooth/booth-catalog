@@ -1,8 +1,10 @@
 # 0003: What an "owner" is — a free-form string, defaulting to the registering user
 
-Status: **flagged** — implemented in the simplest way that works, but it papers over a
-platform-level gap (there is no user directory) that the coordinator should decide whether
-to close. Not blocking.
+Status: **resolved** as `booth-architecture` ADR 0047 (`decisions/0047-minimal-user-directory.md`):
+`booth-core` is building a minimal user directory. That is `booth-core`'s action item, not this repo's —
+the free-form owner string described here is correct for v0 and needs no rework. **Optional future
+improvement once it ships (not required):** store the owner's `sub` alongside the display string and
+resolve display names through `booth-core`'s new `GET /api/users/{sub}`.
 
 ## Context
 
