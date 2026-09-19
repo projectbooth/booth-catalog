@@ -1,6 +1,6 @@
 /// <reference types="vitest/config" />
 import { fileURLToPath } from "node:url";
-import { defineConfig } from "vite";
+import { defineConfig, type ProxyOptions } from "vite";
 import react from "@vitejs/plugin-react";
 
 // Two personalities, one config (ADR 0030) — the same arrangement as booth-storage:
@@ -10,6 +10,17 @@ import react from "@vitejs/plugin-react";
 //   - `vite build` (command "build"): builds the publishable library (@projectbooth/catalog-ui)
 //     from src/index.ts, external-izing react/react-dom so booth-design's own copies are used
 //     (two React copies in one page is a classic cause of "Invalid hook call").
+// What booth-core's gateway does besides stripping the /modules/{id} prefix: it validates the
+// browser's X-Workspace header and forwards it to the module as X-Booth-Workspace (ADR 0025).
+// The modules read only the forwarded header, so the dev proxy has to do the same translation or
+// no request from the harness could ever be authorized.
+const gatewayHeaders: NonNullable<ProxyOptions["configure"]> = (proxy) => {
+  proxy.on("proxyReq", (proxyReq, req) => {
+    const ws = req.headers["x-workspace"];
+    if (typeof ws === "string" && ws !== "") proxyReq.setHeader("X-Booth-Workspace", ws);
+  });
+};
+
 export default defineConfig(({ command }) => ({
   plugins: [react()],
   build:
@@ -37,11 +48,13 @@ export default defineConfig(({ command }) => ({
         // Mimics the gateway's prefix-stripping: /modules/catalog/api/datasets reaches the
         // backend as /api/datasets.
         rewrite: (path) => path.replace(/^\/modules\/catalog/, ""),
+        configure: gatewayHeaders,
       },
       "/modules/storage": {
         target: process.env.BOOTH_STORAGE_DEV_BACKEND ?? "http://localhost:8081",
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/modules\/storage/, ""),
+        configure: gatewayHeaders,
       },
     },
   },
