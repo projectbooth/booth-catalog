@@ -1,0 +1,24 @@
+# Local stand-in for the one external service booth-catalog's tests talk to. CI runs the
+# same image (see .github/workflows/ci.yml), so a green local run means the same thing a
+# green CI run does. Not used at runtime — this is test tooling only.
+#
+#   docker compose -f hack/docker-compose.emulators.yml up -d --wait
+#   eval "$(sh hack/test-env.sh)"        # export the BOOTH_TEST_* variables (bash/zsh)
+#   go test ./...
+#   docker compose -f hack/docker-compose.emulators.yml down -v
+#
+# NATS/JetStream needs no container: the event-subscription tests embed a real nats-server
+# in-process. Port 15433 (not 15432) so this can run alongside booth-storage's test Postgres.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: booth
+      POSTGRES_PASSWORD: booth-test
+      POSTGRES_DB: booth_catalog_test
+    ports: ["15433:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U booth -d booth_catalog_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
