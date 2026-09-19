@@ -166,7 +166,7 @@ describe("registering a dataset", () => {
     await user.type(screen.getByLabelText("Column 1 type"), "bigint");
     await user.click(screen.getByRole("button", { name: "Add column" })); // left blank on purpose
     await user.type(screen.getByLabelText("Tags"), " Finance , pii,, ");
-    await user.click(screen.getByRole("button", { name: "Register dataset", exact: true }));
+    await user.click(screen.getByRole("button", { name: "Register dataset" }));
 
     await screen.findByRole("heading", { name: "orders" });
     const post = m.called("POST", `${CAT}/datasets`)[0];
@@ -190,14 +190,14 @@ describe("registering a dataset", () => {
     const user = userEvent.setup();
     await user.type(screen.getByLabelText(/^Name/), "orders");
     await user.selectOptions(await backendSelect(), "lake");
-    await user.click(screen.getByRole("button", { name: "Register dataset", exact: true }));
+    await user.click(screen.getByRole("button", { name: "Register dataset" }));
 
     const name = await screen.findByLabelText(/^Name/);
     await waitFor(() => expect(name).toHaveAttribute("aria-invalid", "true"));
     expect(screen.getByRole("alert")).toHaveTextContent("already exists");
     // The form is still there, still filled in, and usable again.
     expect(name).toHaveValue("orders");
-    expect(screen.getByRole("button", { name: "Register dataset", exact: true })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Register dataset" })).toBeEnabled();
   });
 
   it("degrades the backend picker to a text box when storage isn't available", async () => {
@@ -342,7 +342,7 @@ describe("code", () => {
     await user.type(screen.getByLabelText(/^Name/), "clean_emails");
     await user.type(screen.getByLabelText("Language"), "Python");
     await user.type(screen.getByLabelText(/^Source/), "def f(): pass");
-    await user.click(screen.getByRole("button", { name: "Publish", exact: true }));
+    await user.click(screen.getByRole("button", { name: "Publish" }));
 
     await screen.findByRole("heading", { name: "clean_emails" });
     expect(m.called("POST", `${CAT}/code`)[0].body).toMatchObject({ name: "clean_emails", language: "Python", version: "1.0.0", source: "def f(): pass" });
