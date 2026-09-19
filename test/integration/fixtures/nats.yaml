@@ -1,0 +1,34 @@
+# A throwaway single-node NATS with JetStream for the integration test cluster, standing in for
+# the one booth-core bundles (ADR 0021). Test fixture only — no auth, no persistence. The
+# BOOTH_EVENTS stream is created by a separate step, exactly as booth-core creates it, so the
+# test can also cover "catalog starts before the stream exists".
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: nats}
+  template:
+    metadata:
+      labels: {app: nats}
+    spec:
+      containers:
+        - name: nats
+          image: nats:2-alpine
+          args: ["-js", "-m", "8222"]
+          ports:
+            - {name: client, containerPort: 4222}
+            - {name: monitor, containerPort: 8222}
+          readinessProbe:
+            httpGet: {path: /healthz, port: monitor}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+spec:
+  selector: {app: nats}
+  ports:
+    - {name: client, port: 4222}

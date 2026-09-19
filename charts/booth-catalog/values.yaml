@@ -1,0 +1,59 @@
+# Default values for booth-catalog.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/projectbooth/booth-catalog
+  tag: "" # defaults to Chart.appVersion; overridden by CI to the published tag (contracts/testing-strategy.md)
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8080
+
+oidc:
+  # Required: same OIDC issuer/client every module verifies against independently
+  # (core-platform-api.md's defense-in-depth requirement). Left empty by default.
+  issuerUrl: ""
+  clientId: ""
+  requireAudience: true
+  # The token claim carrying workspace memberships (ADR 0025). booth-catalog re-derives the
+  # caller's role from it rather than trusting the gateway-forwarded X-Booth-Role (ADR 0041),
+  # so it MUST match booth-core's BOOTH_OIDC_GROUPS_CLAIM.
+  groupsClaim: groups
+
+# The catalog's data lives in this module's own database on the shared PostgreSQL cluster
+# (ADR 0014). Reference an existing Secret holding the connection string; this chart does not
+# create the database or role.
+postgres:
+  dsnSecret:
+    name: ""
+    key: dsn
+
+# The event bus (NATS, ADR 0021) the dashboard.created/updated/deleted subscription connects
+# to. There is no safe default: booth-core's bundled NATS is named after core's Helm release
+# (nats://<core-release>-nats:4222), so the operator must say. Leaving it empty disables the
+# subscription — datasets and code work fully, but no dashboards are ever indexed.
+nats:
+  url: ""
+
+# Cap on one code version's source, in bytes.
+maxCodeSourceBytes: 1048576
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+resources: {}
+
+serviceAccount:
+  create: true
+  name: ""

@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "booth-catalog.fullname" . }}
+  labels:
+    {{- include "booth-catalog.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "booth-catalog.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "booth-catalog.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "booth-catalog.serviceAccountName" . }}
+      # No token: this module never talks to the Kubernetes API (it holds no Secrets and needs
+      # no RBAC), so a mounted service-account token would only be attack surface.
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: booth-catalog
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: BOOTH_HTTP_ADDR
+              value: ":8080"
+            - name: BOOTH_OIDC_ISSUER_URL
+              value: {{ .Values.oidc.issuerUrl | quote }}
+            - name: BOOTH_OIDC_CLIENT_ID
+              value: {{ .Values.oidc.clientId | quote }}
+            - name: BOOTH_OIDC_REQUIRE_AUDIENCE
+              value: {{ .Values.oidc.requireAudience | quote }}
+            - name: BOOTH_OIDC_GROUPS_CLAIM
+              value: {{ .Values.oidc.groupsClaim | quote }}
+            - name: BOOTH_POSTGRES_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "postgres.dsnSecret.name is required: booth-catalog keeps its data in PostgreSQL (ADR 0014)" .Values.postgres.dsnSecret.name }}
+                  key: {{ .Values.postgres.dsnSecret.key }}
+            {{- with .Values.nats.url }}
+            - name: BOOTH_NATS_URL
+              value: {{ . | quote }}
+            {{- end }}
+            - name: BOOTH_CATALOG_MAX_CODE_BYTES
+              value: {{ .Values.maxCodeSourceBytes | int64 | quote }}
+          # /livez does not look at the database on purpose: restarting the pod cannot fix a
+          # Postgres outage. /healthz (readiness, and what core polls) does.
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

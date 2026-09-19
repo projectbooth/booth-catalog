@@ -1,0 +1,113 @@
+name: Integration
+
+# Layer 3 (contracts/testing-strategy.md, ADR 0024): real-cluster integration tests. Runs on
+# merge to main and nightly, not on every push/PR — it's the slower "actually deployed to a real
+# cluster" layer. See test/integration/README.md for exactly what this covers and what's still
+# missing (notably: deploying alongside a real, pinned booth-core). NOTE: this workflow has not
+# been executed yet — no kind/k3d was available when it was written; it was linted and its
+# steps were checked by hand. Expect to shake out first-run issues.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 8 * * *" # nightly
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  kind-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: booth-catalog-ci
+
+      - uses: azure/setup-helm@v4
+
+      - name: Build and load booth-catalog image
+        run: |
+          docker build -t booth-catalog:ci .
+          kind load docker-image booth-catalog:ci --name booth-catalog-ci
+
+      - name: Install vendored BoothModule CRD (see test/integration/fixtures)
+        run: kubectl apply -f test/integration/fixtures/boothmodule-crd.yaml
+
+      - name: Deploy PostgreSQL (ADR 0014) and NATS (ADR 0021) stand-ins
+        run: |
+          kubectl create namespace booth-catalog
+          kubectl apply -n booth-catalog -f test/integration/fixtures/postgres.yaml -f test/integration/fixtures/nats.yaml
+          kubectl -n booth-catalog rollout status deployment/postgres --timeout=180s
+          kubectl -n booth-catalog rollout status deployment/nats --timeout=180s
+
+      # Deliberately BEFORE the stream exists: booth-core creates BOOTH_EVENTS, and at install
+      # time the catalog can start first. It must come up healthy anyway.
+      - name: Install booth-catalog chart
+        working-directory: charts/booth-catalog
+        run: |
+          helm install booth-catalog . \
+            --namespace booth-catalog \
+            --set image.repository=booth-catalog \
+            --set image.tag=ci \
+            --set image.pullPolicy=Never \
+            --set oidc.issuerUrl=https://accounts.google.com \
+            --set oidc.clientId=booth-catalog-ci \
+            --set oidc.requireAudience=false \
+            --set postgres.dsnSecret.name=booth-catalog-db \
+            --set nats.url=nats://nats:4222 \
+            --wait --timeout 5m
+
+      - name: Verify rollout and registration (ADR 0019)
+        run: |
+          kubectl -n booth-catalog get pods
+          kubectl -n booth-catalog get boothmodules.booth.projectbooth.io catalog -o yaml
+          test "$(kubectl -n booth-catalog get boothmodules.booth.projectbooth.io catalog -o jsonpath='{.spec.navPath}')" = "/catalog"
+          test "$(kubectl -n booth-catalog get boothmodules.booth.projectbooth.io catalog -o jsonpath='{.spec.navGroup}')" = "view"
+
+      - name: /healthz is 200 with the stream missing (migrations ran, Postgres reachable, NATS lag is only "degraded")
+        run: |
+          out="$(kubectl -n booth-catalog run curl-early --rm -i --restart=Never --image=curlimages/curl -- \
+            curl -sf http://booth-catalog.booth-catalog.svc.cluster.local:8080/healthz)"
+          echo "$out"
+          echo "$out" | grep -q '"database":"ok"'
+          echo "$out" | grep -q 'waiting-for-stream'
+
+      - name: Create the BOOTH_EVENTS stream the way booth-core does; the subscription must attach
+        run: |
+          kubectl -n booth-catalog run nats-box --rm -i --restart=Never --image=natsio/nats-box -- \
+            nats --server nats://nats:4222 stream add BOOTH_EVENTS --subjects 'booth.>' --storage memory \
+            --retention limits --discard old --defaults
+          for i in $(seq 1 30); do
+            out="$(kubectl -n booth-catalog run curl-late-$i --rm -i --restart=Never --image=curlimages/curl -- \
+              curl -sf http://booth-catalog.booth-catalog.svc.cluster.local:8080/healthz || true)"
+            if echo "$out" | grep -q '"eventBus":"subscribed"' && echo "$out" | grep -q '"status":"ok"'; then
+              echo "$out"; exit 0
+            fi
+            sleep 2
+          done
+          echo "the subscription never attached: $out"; exit 1
+
+      - name: Verify the API refuses unauthenticated requests in-cluster
+        run: |
+          # `kubectl run --rm` appends its own "pod deleted" line, so match rather than compare.
+          for path in /api/datasets /api/code /api/dashboards "/api/search?q=x"; do
+            kubectl -n booth-catalog run curl-authz --rm -i --restart=Never --image=curlimages/curl -- \
+              curl -s -o /dev/null -w 'status=%{http_code}' "http://booth-catalog.booth-catalog.svc.cluster.local:8080$path" \
+              | grep -q 'status=401' || { echo "$path was not refused"; exit 1; }
+          done
+
+      - name: Verify the module has no Kubernetes API access
+        run: |
+          sa="system:serviceaccount:booth-catalog:booth-catalog"
+          for args in "get secrets -n booth-catalog" "list secrets -n booth-catalog" "get pods -n booth-catalog" "get secrets -n kube-system"; do
+            test "$(kubectl auth can-i $args --as="$sa")" = "no" || { echo "unexpectedly ALLOWED: $args"; exit 1; }
+          done
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          kubectl -n booth-catalog get all
+          kubectl -n booth-catalog logs deployment/booth-catalog --tail=200 || true

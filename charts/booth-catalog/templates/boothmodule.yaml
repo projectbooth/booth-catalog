@@ -1,0 +1,30 @@
+# Registers booth-catalog with booth-core's module registry (ADR 0019): the BoothModule CRD is
+# the only thing core reads to know this module exists (contracts/module-manifest.md). Uses
+# booth-core's own CRD type (booth.projectbooth.io/v1alpha1), which that chart installs — not
+# redefined here.
+#
+# A native-mode module (ADR 0005/0030) in the View nav group (ADR 0017). No adminNavPath: the
+# catalog has one view for every role; write controls are gated by role inside it (ADR 0004).
+apiVersion: booth.projectbooth.io/v1alpha1
+kind: BoothModule
+metadata:
+  name: catalog
+  labels:
+    {{- include "booth-catalog.labels" . | nindent 4 }}
+spec:
+  id: catalog
+  displayName: Catalog
+  icon: book
+  version: {{ .Chart.AppVersion | quote }}
+  contractVersion: "0.1.0"
+  hasOwnUi: true
+  uiIntegrationMode: native
+  navGroup: view
+  navPath: /catalog
+  healthCheckPath: /healthz
+  requiredScopes:
+    - catalog.read
+    - catalog.write
+  serviceRef:
+    name: {{ include "booth-catalog.fullname" . }}
+    port: {{ .Values.service.port }}

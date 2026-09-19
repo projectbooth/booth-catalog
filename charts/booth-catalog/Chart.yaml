@@ -1,0 +1,10 @@
+apiVersion: v2
+name: booth-catalog
+description: >
+  Project Booth's catalog module: register and browse datasets, reusable code with version
+  history, and dashboards indexed from the dashboard modules' events, with lineage and
+  cross-asset search.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/projectbooth/booth-catalog
