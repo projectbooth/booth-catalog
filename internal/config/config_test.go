@@ -11,6 +11,7 @@ func setEnv(t *testing.T, kv map[string]string) {
 	for _, k := range []string{
 		"BOOTH_HTTP_ADDR", "BOOTH_POSTGRES_DSN", "BOOTH_NATS_URL", "BOOTH_NATS_CREDS_FILE", "BOOTH_CATALOG_MAX_CODE_BYTES", "BOOTH_CATALOG_DEV_MEMORY",
 		"BOOTH_OIDC_ISSUER_URL", "BOOTH_OIDC_CLIENT_ID", "BOOTH_OIDC_REQUIRE_AUDIENCE", "BOOTH_OIDC_GROUPS_CLAIM",
+		"BOOTH_WORKLOAD_ISSUER_URL",
 	} {
 		t.Setenv(k, "")
 	}
@@ -40,7 +41,7 @@ func TestLoad_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTPAddr != ":8080" || cfg.MaxCodeSourceBytes != 1<<20 || cfg.NATSURL != "" || cfg.DevMemory || cfg.OIDC.RequireAudience {
+	if cfg.HTTPAddr != ":8080" || cfg.MaxCodeSourceBytes != 1<<20 || cfg.NATSURL != "" || cfg.DevMemory || cfg.OIDC.RequireAudience || cfg.WorkloadIssuerURL != "" {
 		t.Errorf("defaults = %+v", cfg)
 	}
 	// The default must match booth-core's, or every request is refused (ADR 0041's fail-closed).
@@ -53,12 +54,13 @@ func TestLoad_Overrides(t *testing.T) {
 	setEnv(t, with(map[string]string{
 		"BOOTH_HTTP_ADDR": ":9090", "BOOTH_NATS_URL": "nats://n:4222", "BOOTH_CATALOG_MAX_CODE_BYTES": "4096",
 		"BOOTH_OIDC_REQUIRE_AUDIENCE": "true", "BOOTH_OIDC_GROUPS_CLAIM": "memberships",
+		"BOOTH_WORKLOAD_ISSUER_URL": "http://booth-core:8080",
 	}))
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTPAddr != ":9090" || cfg.NATSURL != "nats://n:4222" || cfg.MaxCodeSourceBytes != 4096 || !cfg.OIDC.RequireAudience || cfg.OIDC.GroupsClaim != "memberships" {
+	if cfg.HTTPAddr != ":9090" || cfg.NATSURL != "nats://n:4222" || cfg.MaxCodeSourceBytes != 4096 || !cfg.OIDC.RequireAudience || cfg.OIDC.GroupsClaim != "memberships" || cfg.WorkloadIssuerURL != "http://booth-core:8080" {
 		t.Errorf("cfg = %+v", cfg)
 	}
 }

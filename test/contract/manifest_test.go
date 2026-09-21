@@ -266,6 +266,18 @@ func TestChart_EventBusIsWiredOrExplicitlyOff(t *testing.T) {
 	}
 }
 
+// Trusting booth-core as a second issuer (ADR 0056) is opt-in: nothing is rendered unless the
+// operator names core's issuer URL.
+func TestChart_WorkloadIssuer(t *testing.T) {
+	if bytes.Contains(helmTemplate(t, "templates/deployment.yaml"), []byte("BOOTH_WORKLOAD_ISSUER_URL")) {
+		t.Error("workload issuer rendered without workloadIdentity.issuerUrl being set")
+	}
+	out := helmTemplate(t, "templates/deployment.yaml", "--set", "workloadIdentity.issuerUrl=http://booth-core.booth-system.svc:8080")
+	if !regexp.MustCompile(`BOOTH_WORKLOAD_ISSUER_URL\s+value: "http://booth-core.booth-system.svc:8080"`).Match(out) {
+		t.Errorf("workload issuer not rendered:\n%s", out)
+	}
+}
+
 // The module re-derives roles from the token's groups claim (ADR 0041), so the claim name must
 // reach the pod and default to booth-core's.
 func TestChart_PassesGroupsClaim(t *testing.T) {

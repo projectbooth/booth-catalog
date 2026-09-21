@@ -21,6 +21,15 @@ oidc:
   # so it MUST match booth-core's BOOTH_OIDC_GROUPS_CLAIM.
   groupsClaim: groups
 
+# Workload identity (ADR 0056): trust booth-core as a second token issuer, for the short-lived
+# tokens it mints for unattended runs (e.g. a scheduled booth-pipeline run registering catalog
+# output). These carry a `groups` claim shaped like a human's, so role derivation is unchanged.
+# Set to booth-core's own issuer URL — exactly its `workloadIdentity.issuerUrl` (empty there means
+# its in-cluster Service URL, e.g. http://booth-core.booth-system.svc:8080) — keys are read from
+# <url>/.well-known/jwks.json. Empty (the default) accepts only the OIDC provider's tokens above.
+workloadIdentity:
+  issuerUrl: ""
+
 # The catalog's data lives in this module's own database on the shared PostgreSQL cluster
 # (ADR 0014). Reference an existing Secret holding the connection string; this chart does not
 # create the database or role.

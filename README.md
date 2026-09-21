@@ -77,6 +77,14 @@ published an event.
 over-claiming header is rejected with 403 (ADR 0041; verified against real Keycloak).
 `oidc.groupsClaim` must match booth-core's or every request is refused.
 
+**Workload tokens (ADR 0056).** Set `workloadIdentity.issuerUrl` (env `BOOTH_WORKLOAD_ISSUER_URL`) to
+booth-core's own issuer URL and the catalog also accepts the short-lived tokens core mints for
+unattended runs (e.g. a scheduled `booth-pipeline` run), verified against core's JWKS at
+`<url>/.well-known/jwks.json` alongside the OIDC provider's. Their `groups` claim has a human token's
+shape, so the role derivation above is unchanged. It must equal booth-core's `workloadIdentity.issuerUrl`
+exactly (it is compared with the token's `iss`), and the keys are fetched on first use, so the catalog
+still starts if core is down. Unset, only the OIDC provider's tokens are accepted.
+
 ## The dashboard event contract
 
 The payload for `dashboard.created` / `updated` / `deleted` is **ratified as ADR 0046** (this repo's

@@ -58,6 +58,11 @@ func run() error {
 	// catalog from serving datasets and code. Subscriber.Run retries on its own and reports
 	// its state through /healthz.
 	deps := api.Deps{Verifier: verifier, Catalog: catalog}
+	if cfg.WorkloadIssuerURL != "" {
+		workloadCfg := cfg.OIDC
+		workloadCfg.IssuerURL = cfg.WorkloadIssuerURL
+		deps.Verifier = auth.ChainVerifier{verifier, auth.NewWorkloadVerifier(ctx, workloadCfg)}
+	}
 	if cfg.NATSURL == "" {
 		log.Print("BOOTH_NATS_URL is not set: the dashboard event subscription is disabled, so no dashboards will be indexed")
 	} else {

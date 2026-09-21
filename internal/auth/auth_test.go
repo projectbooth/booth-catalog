@@ -194,6 +194,105 @@ func TestVerifier_DisplayName(t *testing.T) {
 	}
 }
 
+// newFakeCore is booth-core's workload issuer as a module sees it (ADR 0056): a JWKS at the
+// fixed well-known path and nothing else — in particular no OIDC discovery document, which is
+// why NewWorkloadVerifier must not need one.
+func newFakeCore(t *testing.T) *fakeIdP {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core := &fakeIdP{key: key}
+	mux := http.NewServeMux()
+	mux.HandleFunc(WorkloadJWKSPath, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &key.PublicKey, KeyID: "k1", Algorithm: "RS256", Use: "sig"}}})
+	})
+	core.server = httptest.NewServer(mux)
+	t.Cleanup(core.server.Close)
+	return core
+}
+
+// A workload token verifies against core's JWKS, and its groups claim feeds the unchanged
+// ADR 0041 role derivation.
+func TestWorkloadVerifier(t *testing.T) {
+	core := newFakeCore(t)
+	otherKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	ctx := context.Background()
+
+	v := NewWorkloadVerifier(ctx, OIDCConfig{IssuerURL: core.server.URL + "/", ClientID: "booth-catalog", RequireAudience: true})
+
+	claims, err := v.Verify(ctx, core.token(t, tokenOpts{
+		subject: "job:nightly-42", audience: "booth-catalog", groups: []string{"/workspaces/acme/editor"},
+	}))
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if claims.Subject != "job:nightly-42" {
+		t.Errorf("subject = %q", claims.Subject)
+	}
+	if got := RoleInWorkspace(claims.Groups, "acme"); got != RoleEditor {
+		t.Errorf("role = %q, want editor", got)
+	}
+	if got := RoleInWorkspace(claims.Groups, "other"); got != "" {
+		t.Errorf("role in another workspace = %q, want none", got)
+	}
+
+	for name, o := range map[string]tokenOpts{
+		"signed by an unknown key": {subject: "job:x", audience: "booth-catalog", signWith: otherKey},
+		"wrong issuer":             {subject: "job:x", audience: "booth-catalog", issuer: "https://evil.example"},
+		"expired":                  {subject: "job:x", audience: "booth-catalog", expiry: -time.Hour},
+		"wrong audience":           {subject: "job:x", audience: "someone-else"},
+	} {
+		if c, err := v.Verify(ctx, core.token(t, o)); err == nil {
+			t.Errorf("%s: verified with claims %+v, want an error", name, c)
+		}
+	}
+}
+
+// Constructing the workload verifier must not touch the network: booth-catalog must start with
+// booth-core down or not yet deployed.
+func TestWorkloadVerifier_NoNetworkAtConstruction(t *testing.T) {
+	v := NewWorkloadVerifier(context.Background(), OIDCConfig{IssuerURL: "http://127.0.0.1:1"})
+	if v == nil {
+		t.Fatal("nil verifier")
+	}
+	if _, err := v.Verify(context.Background(), "not.a.jwt"); err == nil {
+		t.Error("garbage token verified")
+	}
+}
+
+// With both issuers trusted, each issuer's tokens are accepted and neither issuer's key can
+// vouch for a token naming the other.
+func TestChainVerifier_TwoIssuers(t *testing.T) {
+	idp := newFakeIdP(t)
+	core := newFakeCore(t)
+	ctx := context.Background()
+
+	human, err := NewVerifier(ctx, OIDCConfig{IssuerURL: idp.server.URL, ClientID: "booth-catalog"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain := ChainVerifier{human, NewWorkloadVerifier(ctx, OIDCConfig{IssuerURL: core.server.URL, ClientID: "booth-catalog"})}
+
+	if c, err := chain.Verify(ctx, idp.token(t, tokenOpts{subject: "alice", groups: []string{"/workspaces/acme/owner"}})); err != nil || c.Subject != "alice" {
+		t.Errorf("human token: %+v, %v", c, err)
+	}
+	if c, err := chain.Verify(ctx, core.token(t, tokenOpts{subject: "job:1", groups: []string{"/workspaces/acme/viewer"}})); err != nil || c.Subject != "job:1" {
+		t.Errorf("workload token: %+v, %v", c, err)
+	}
+	// Core's key claiming to be the human provider, and the provider's key claiming to be core.
+	if c, err := chain.Verify(ctx, core.token(t, tokenOpts{subject: "mallory", issuer: idp.server.URL})); err == nil {
+		t.Errorf("core-signed token naming the OIDC issuer verified: %+v", c)
+	}
+	if c, err := chain.Verify(ctx, idp.token(t, tokenOpts{subject: "mallory", issuer: core.server.URL})); err == nil {
+		t.Errorf("provider-signed token naming core verified: %+v", c)
+	}
+	if _, err := (ChainVerifier{}).Verify(ctx, "x"); err == nil {
+		t.Error("empty chain accepted a token")
+	}
+}
+
 type stubVerifier map[string]*Claims
 
 func (s stubVerifier) Verify(_ context.Context, tok string) (*Claims, error) {

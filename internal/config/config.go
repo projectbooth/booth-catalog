@@ -22,6 +22,13 @@ type Config struct {
 	// caller's workspace role from it (ADR 0041).
 	OIDC auth.OIDCConfig
 
+	// WorkloadIssuerURL is booth-core's own issuer URL (ADR 0056), trusted as a second token
+	// issuer for the short-lived workload tokens core mints for unattended runs. Its keys are
+	// read from <url>/.well-known/jwks.json. It is not the OIDC provider's URL; it must match
+	// booth-core's workloadIdentity.issuerUrl exactly, since it is compared against the token's
+	// `iss`. Empty means only the OIDC provider's tokens are accepted (the default).
+	WorkloadIssuerURL string
+
 	// PostgresDSN is the connection string for this module's own database on the shared
 	// PostgreSQL cluster (ADR 0014).
 	PostgresDSN string
@@ -49,6 +56,7 @@ type Config struct {
 func Load() (Config, error) {
 	cfg := Config{
 		HTTPAddr:           getEnv("BOOTH_HTTP_ADDR", ":8080"),
+		WorkloadIssuerURL:  os.Getenv("BOOTH_WORKLOAD_ISSUER_URL"),
 		PostgresDSN:        os.Getenv("BOOTH_POSTGRES_DSN"),
 		NATSURL:            os.Getenv("BOOTH_NATS_URL"),
 		NATSCredsFile:      os.Getenv("BOOTH_NATS_CREDS_FILE"),

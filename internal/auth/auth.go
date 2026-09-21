@@ -87,17 +87,71 @@ func NewVerifier(ctx context.Context, cfg OIDCConfig) (*Verifier, error) {
 	if err != nil {
 		return nil, fmt.Errorf("oidc discovery against %s: %w", cfg.IssuerURL, err)
 	}
-	claim := cfg.GroupsClaim
-	if claim == "" {
-		claim = DefaultGroupsClaim
-	}
 	return &Verifier{
 		idTokenVerifier: provider.Verifier(&oidc.Config{
 			SkipClientIDCheck: !cfg.RequireAudience,
 			ClientID:          cfg.ClientID,
 		}),
-		groupsClaim: claim,
+		groupsClaim: groupsClaimOrDefault(cfg.GroupsClaim),
 	}, nil
+}
+
+// WorkloadJWKSPath is where booth-core publishes its workload-token verification keys,
+// relative to its issuer URL (ADR 0056; booth-core's workload.JWKSPath).
+const WorkloadJWKSPath = "/.well-known/jwks.json"
+
+// NewWorkloadVerifier verifies the short-lived tokens booth-core mints for unattended runs
+// (ADR 0056): a second trusted issuer alongside the deployment's OIDC provider. The token's
+// groups claim has exactly the shape a human's does, so the same ADR 0041 role derivation
+// applies unchanged; only the trust root differs.
+//
+// Unlike NewVerifier this does no discovery and touches no network at construction: core's
+// JWKS location is fixed, and the keys are fetched (and cached) on first use. Startup must not
+// depend on booth-core being reachable, and a core outage only affects workload tokens.
+//
+// cfg.IssuerURL is core's own issuer URL, which is not the OIDC provider's; ClientID,
+// RequireAudience and GroupsClaim carry over from the human-token configuration because core
+// mints `aud` and `groups` to match what modules already expect (ADR 0056).
+func NewWorkloadVerifier(ctx context.Context, cfg OIDCConfig) *Verifier {
+	issuer := strings.TrimRight(cfg.IssuerURL, "/")
+	keys := oidc.NewRemoteKeySet(ctx, issuer+WorkloadJWKSPath)
+	return &Verifier{
+		idTokenVerifier: oidc.NewVerifier(issuer, keys, &oidc.Config{
+			SkipClientIDCheck: !cfg.RequireAudience,
+			ClientID:          cfg.ClientID,
+		}),
+		groupsClaim: groupsClaimOrDefault(cfg.GroupsClaim),
+	}
+}
+
+func groupsClaimOrDefault(c string) string {
+	if c == "" {
+		return DefaultGroupsClaim
+	}
+	return c
+}
+
+// ChainVerifier accepts a token if any of its verifiers does. Each *Verifier checks the
+// token's issuer against its own before anything else, so a token can only ever be accepted
+// by the verifier configured for the issuer it names — there is no cross-issuer confusion to
+// guard against, and the order only decides which error is reported.
+type ChainVerifier []TokenVerifier
+
+func (c ChainVerifier) Verify(ctx context.Context, rawToken string) (*Claims, error) {
+	var firstErr error
+	for _, v := range c {
+		claims, err := v.Verify(ctx, rawToken)
+		if err == nil {
+			return claims, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr == nil {
+		firstErr = fmt.Errorf("no token verifiers configured")
+	}
+	return nil, firstErr
 }
 
 func (v *Verifier) Verify(ctx context.Context, rawToken string) (*Claims, error) {
