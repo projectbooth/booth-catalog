@@ -41,3 +41,24 @@ UTF-8 text with no NUL bytes, and is immutable once published.
   contract. Nothing here should be read as pre-empting that. `booth-pipeline` isn't started
   yet, so there is nothing to coordinate against — when its agent begins, this is the surface
   to build against and the point to negotiate from.
+
+## Guarantees a consumer may rely on (confirmed to `booth-pipeline`, 2026-09-21)
+
+`booth-pipeline` resolves a code reference `{entryId, version}` at pipeline-save time, server-side, with the
+caller's own token through the gateway, and snapshots the source plus a hash — runs never call the catalog. That
+needs nothing new from this repo; it relies on the following, each covered by an existing test:
+
+- **A published version's source is immutable.** Republishing a label is refused (409); there is no update path.
+  Source is stored byte for byte, so a hash over its UTF-8 bytes is stable across reads.
+- **`GET /api/code/{id}/versions/latest` returns the concrete `version` label** (with `seq`, `notes`, `sizeBytes`,
+  `publishedBy`, `publishedAt`, `source`). "Latest" is the most recently published version (highest `seq`), not the
+  highest-numbered label; the label `latest` is reserved.
+- **A deleted entry is 404 on every read**, and an entry in another workspace is indistinguishable from a missing one.
+
+What is *not* promised: immutability is per version, not per entry — deleting an entry deletes all its versions, and
+individual versions cannot be deleted. Entry IDs are UUIDs, stable across renames and never reused (a *name* can be
+reused, so key on the ID). The 1 MiB source cap is a default the operator can change; it is advertised at
+`GET /api/config` (`maxCodeSourceBytes`). `language` is an optional free label, lowercased, and mutable. The gateway's
+own "module not found" 404 is plain text while the catalog's is JSON `{"error": …}` — tell them apart by the body.
+No digest is exposed; `booth-pipeline` hashes its own snapshot. Changing any of the promised behavior would be a
+change to a consumer's contract and should go through the coordinator.
