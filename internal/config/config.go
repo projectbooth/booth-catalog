@@ -31,6 +31,12 @@ type Config struct {
 	// work fully without it, dashboards simply never arrive. Chart installs always set it.
 	NATSURL string
 
+	// NATSCredsFile is the NATS ".creds" file booth-core provisions for this module (ADR 0050);
+	// the chart mounts the "booth-event-bus-credentials" Secret and points this at its
+	// "nats.creds" key. Required by booth-core's bus; only omit it against a bus with
+	// authentication off (local development).
+	NATSCredsFile string
+
 	// MaxCodeSourceBytes bounds one code version's source (default 1 MiB).
 	MaxCodeSourceBytes int
 
@@ -45,6 +51,7 @@ func Load() (Config, error) {
 		HTTPAddr:           getEnv("BOOTH_HTTP_ADDR", ":8080"),
 		PostgresDSN:        os.Getenv("BOOTH_POSTGRES_DSN"),
 		NATSURL:            os.Getenv("BOOTH_NATS_URL"),
+		NATSCredsFile:      os.Getenv("BOOTH_NATS_CREDS_FILE"),
 		MaxCodeSourceBytes: code.DefaultMaxSourceBytes,
 		DevMemory:          os.Getenv("BOOTH_CATALOG_DEV_MEMORY") == "true",
 		OIDC: auth.OIDCConfig{
@@ -63,6 +70,11 @@ func Load() (Config, error) {
 		cfg.MaxCodeSourceBytes = n
 	}
 
+	// Credentials with nowhere to connect is a wiring mistake, not a reason to quietly run without
+	// dashboards: say so at startup rather than leaving an empty dashboard list to be puzzled over.
+	if cfg.NATSCredsFile != "" && cfg.NATSURL == "" {
+		return Config{}, fmt.Errorf("BOOTH_NATS_CREDS_FILE is set but BOOTH_NATS_URL is not: the credentials have no bus to connect to")
+	}
 	if cfg.OIDC.IssuerURL == "" {
 		return Config{}, fmt.Errorf("BOOTH_OIDC_ISSUER_URL is required")
 	}

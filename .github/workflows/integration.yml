@@ -45,6 +45,13 @@ jobs:
 
       # Deliberately BEFORE the stream exists: booth-core creates BOOTH_EVENTS, and at install
       # time the catalog can start first. It must come up healthy anyway.
+      #
+      # The stand-in NATS has no authentication and there is no booth-core here to mint a
+      # credential, so the credentials Secret is switched off and the bus address given by hand.
+      # That means this job cannot cover ADR 0050's authenticated path: that is covered by
+      # internal/events' tests (a real nats-server in JWT operator mode, with core's derived
+      # grants) and, deployed together with a real booth-core, by booth-e2e's
+      # smoke.7-dashboard-event.
       - name: Install booth-catalog chart
         working-directory: charts/booth-catalog
         run: |
@@ -57,6 +64,7 @@ jobs:
             --set oidc.clientId=booth-catalog-ci \
             --set oidc.requireAudience=false \
             --set postgres.dsnSecret.name=booth-catalog-db \
+            --set eventBus.credentialsSecret.enabled=false \
             --set nats.url=nats://nats:4222 \
             --wait --timeout 5m
 
@@ -66,6 +74,9 @@ jobs:
           kubectl -n booth-catalog get boothmodules.booth.projectbooth.io catalog -o yaml
           test "$(kubectl -n booth-catalog get boothmodules.booth.projectbooth.io catalog -o jsonpath='{.spec.navPath}')" = "/catalog"
           test "$(kubectl -n booth-catalog get boothmodules.booth.projectbooth.io catalog -o jsonpath='{.spec.navGroup}')" = "view"
+          # ADR 0050: without this field booth-core mints no bus credential. Checked on the LIVE
+          # resource, because a CRD that doesn't know the field prunes it silently.
+          test "$(kubectl -n booth-catalog get boothmodules.booth.projectbooth.io catalog -o jsonpath='{.spec.events.subscribe[0]}')" = "dashboard.*"
 
       - name: /healthz is 200 with the stream missing (migrations ran, Postgres reachable, NATS lag is only "degraded")
         run: |

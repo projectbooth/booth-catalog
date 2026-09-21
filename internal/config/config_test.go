@@ -9,7 +9,7 @@ import (
 func setEnv(t *testing.T, kv map[string]string) {
 	t.Helper()
 	for _, k := range []string{
-		"BOOTH_HTTP_ADDR", "BOOTH_POSTGRES_DSN", "BOOTH_NATS_URL", "BOOTH_CATALOG_MAX_CODE_BYTES", "BOOTH_CATALOG_DEV_MEMORY",
+		"BOOTH_HTTP_ADDR", "BOOTH_POSTGRES_DSN", "BOOTH_NATS_URL", "BOOTH_NATS_CREDS_FILE", "BOOTH_CATALOG_MAX_CODE_BYTES", "BOOTH_CATALOG_DEV_MEMORY",
 		"BOOTH_OIDC_ISSUER_URL", "BOOTH_OIDC_CLIENT_ID", "BOOTH_OIDC_REQUIRE_AUDIENCE", "BOOTH_OIDC_GROUPS_CLAIM",
 	} {
 		t.Setenv(k, "")
@@ -78,6 +78,28 @@ func TestLoad_Required(t *testing.T) {
 		if _, err := Load(); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: err = %v, want it to name %s", name, err, tc.want)
 		}
+	}
+}
+
+// Event-bus credentials (ADR 0050) with no bus address to use them on is a wiring mistake, and the
+// failure it used to become — a catalog that quietly indexes no dashboards — is exactly what
+// booth-e2e tripped over. It stops at startup instead.
+func TestLoad_EventBusCredentialsNeedAnAddress(t *testing.T) {
+	setEnv(t, with(map[string]string{"BOOTH_NATS_CREDS_FILE": "/etc/booth/event-bus/nats.creds"}))
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "BOOTH_NATS_URL") {
+		t.Errorf("err = %v, want it to say the credentials have no BOOTH_NATS_URL to connect to", err)
+	}
+
+	setEnv(t, with(map[string]string{"BOOTH_NATS_CREDS_FILE": "/etc/booth/event-bus/nats.creds", "BOOTH_NATS_URL": "nats://n:4222"}))
+	cfg, err := Load()
+	if err != nil || cfg.NATSCredsFile != "/etc/booth/event-bus/nats.creds" || cfg.NATSURL != "nats://n:4222" {
+		t.Errorf("Load = %+v, %v", cfg, err)
+	}
+
+	// No credentials at all remains valid: an unauthenticated stand-in bus, or the bus left out.
+	setEnv(t, with(map[string]string{"BOOTH_NATS_URL": "nats://n:4222"}))
+	if cfg, err := Load(); err != nil || cfg.NATSCredsFile != "" {
+		t.Errorf("Load without credentials = %+v, %v", cfg, err)
 	}
 }
 

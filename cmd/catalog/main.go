@@ -61,7 +61,7 @@ func run() error {
 	if cfg.NATSURL == "" {
 		log.Print("BOOTH_NATS_URL is not set: the dashboard event subscription is disabled, so no dashboards will be indexed")
 	} else {
-		sub := events.NewSubscriber(events.SubscriberConfig{URL: cfg.NATSURL}, events.NewProcessor(catalog.Dashboards))
+		sub := events.NewSubscriber(events.SubscriberConfig{URL: cfg.NATSURL, CredentialsFile: cfg.NATSCredsFile}, events.NewProcessor(catalog.Dashboards))
 		deps.Events = sub
 		go sub.Run(ctx)
 	}

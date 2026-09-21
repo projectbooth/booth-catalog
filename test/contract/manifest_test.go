@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -31,7 +32,11 @@ type boothModule struct {
 		NavGroup          string   `yaml:"navGroup"`
 		NavPath           string   `yaml:"navPath"`
 		AdminNavPath      string   `yaml:"adminNavPath"`
-		ServiceRef        struct {
+		Events            *struct {
+			Publish   []string `yaml:"publish"`
+			Subscribe []string `yaml:"subscribe"`
+		} `yaml:"events"`
+		ServiceRef struct {
 			Name string `yaml:"name"`
 			Port int    `yaml:"port"`
 		} `yaml:"serviceRef"`
@@ -164,15 +169,100 @@ func TestChart_RequiresDatabaseSecret(t *testing.T) {
 	}
 }
 
-// NATS has no safe default (its address depends on booth-core's release name), so the env var
-// is rendered only when the operator sets it.
-func TestChart_NATSURLIsOptInAndPassedThrough(t *testing.T) {
-	if bytes.Contains(helmTemplate(t, "templates/deployment.yaml"), []byte("BOOTH_NATS_URL")) {
-		t.Error("BOOTH_NATS_URL rendered with no nats.url configured")
+// ADR 0050: a module that omits `events` gets no event-bus credential and cannot connect to the
+// bus at all. This is the field whose absence silently disabled the dashboard subscription
+// (booth-e2e's SKIPped smoke.7-dashboard-event), so it is pinned exactly: the catalog subscribes
+// to dashboard.* and — least privilege — publishes nothing.
+func TestManifest_DeclaresItsEventBusUsage(t *testing.T) {
+	m := renderBoothModule(t)
+	if m.Spec.Events == nil {
+		t.Fatal("spec.events is missing: without it booth-core mints no bus credential and the dashboard subscription cannot connect (ADR 0050)")
 	}
-	with := helmTemplate(t, "templates/deployment.yaml", "--set", "nats.url=nats://core-nats:4222")
-	if !regexp.MustCompile(`BOOTH_NATS_URL\s+value: "nats://core-nats:4222"`).Match(with) {
-		t.Errorf("configured NATS URL not rendered:\n%s", with)
+	if len(m.Spec.Events.Subscribe) != 1 || m.Spec.Events.Subscribe[0] != "dashboard.*" {
+		t.Errorf("spec.events.subscribe = %v, want exactly [dashboard.*]", m.Spec.Events.Subscribe)
+	}
+	if len(m.Spec.Events.Publish) != 0 {
+		t.Errorf("spec.events.publish = %v; the catalog publishes no events and must not ask to", m.Spec.Events.Publish)
+	}
+	// The pattern must satisfy core's own grammar (its CRD validation): dotted lowercase tokens, a
+	// literal first token, `*` only after it.
+	if !regexp.MustCompile(`^[a-z][a-z0-9]*(\.([a-z][a-z0-9]*|\*))+$`).MatchString(m.Spec.Events.Subscribe[0]) {
+		t.Errorf("%q would be rejected by booth-core's event-pattern validation", m.Spec.Events.Subscribe[0])
+	}
+}
+
+// The credential core writes for the declared events reaches the pod: the Secret is mounted as a
+// directory (so in-place renewal propagates — a subPath mount would never update), the app is
+// pointed at the file, and the bus address comes from the same Secret. Nothing is optional: a pod
+// with no credential must wait, not start looking healthy while indexing nothing.
+func TestChart_MountsTheEventBusCredential(t *testing.T) {
+	dep := string(helmTemplate(t, "templates/deployment.yaml"))
+	for _, want := range []string{
+		"BOOTH_NATS_CREDS_FILE",
+		"/etc/booth/event-bus/nats.creds",
+		"secretName: booth-event-bus-credentials",
+		"mountPath: /etc/booth/event-bus",
+		"readOnly: true",
+	} {
+		if !strings.Contains(dep, want) {
+			t.Errorf("deployment lacks %q:\n%s", want, dep)
+		}
+	}
+	if !regexp.MustCompile(`BOOTH_NATS_URL\s+valueFrom:\s+secretKeyRef:\s+name: booth-event-bus-credentials\s+key: url`).MatchString(dep) {
+		t.Errorf("the bus URL should come from the credentials Secret's url key:\n%s", dep)
+	}
+	if strings.Contains(dep, "subPath:") {
+		t.Error("the credentials Secret is mounted with subPath, which the kubelet never updates: a renewed credential would not arrive")
+	}
+	if strings.Contains(dep, "optional: true") {
+		t.Error("the credentials must not be optional: the pod should wait for them, not run without")
+	}
+}
+
+// nats.url overrides the URL in the Secret (booth-e2e sets it by hand), but never replaces the
+// credential itself.
+func TestChart_NATSURLOverridesTheSecretsAddress(t *testing.T) {
+	dep := string(helmTemplate(t, "templates/deployment.yaml", "--set", "nats.url=nats://core-nats:4222"))
+	if !regexp.MustCompile(`BOOTH_NATS_URL\s+value: "nats://core-nats:4222"`).MatchString(dep) {
+		t.Errorf("nats.url not rendered:\n%s", dep)
+	}
+	if !strings.Contains(dep, "BOOTH_NATS_CREDS_FILE") {
+		t.Error("overriding the URL dropped the credential")
+	}
+}
+
+// The event bus is either wired or explicitly off; there is no state where forgetting a value
+// quietly leaves the dashboard subscription dead (the second silent failure booth-e2e found).
+func TestChart_EventBusIsWiredOrExplicitlyOff(t *testing.T) {
+	// Explicitly off: nothing about the bus is rendered — no events, no credential, no URL.
+	off := []string{"--set", "eventBus.enabled=false"}
+	m := helmTemplate(t, "templates/boothmodule.yaml", off...)
+	dep := helmTemplate(t, "templates/deployment.yaml", off...)
+	if bytes.Contains(m, []byte("events:")) {
+		t.Errorf("events declared with the event bus off:\n%s", m)
+	}
+	for _, unwanted := range []string{"BOOTH_NATS", "event-bus-credentials", "volumes:"} {
+		if bytes.Contains(dep, []byte(unwanted)) {
+			t.Errorf("%q rendered with the event bus off:\n%s", unwanted, dep)
+		}
+	}
+
+	// Credentials Secret switched off with no URL to fall back on: refuse to render, and say why.
+	out, err := helm(t, append([]string{"template", "x", chartDir()}, append(requiredValues, "--set", "eventBus.credentialsSecret.enabled=false")...)...)
+	if err == nil {
+		t.Fatalf("rendered a deployment with no credentials and no bus address:\n%s", out)
+	}
+	if !bytes.Contains(out, []byte("nats.url is required")) {
+		t.Errorf("failure message not actionable:\n%s", out)
+	}
+
+	// ...but with a URL (an unauthenticated stand-in bus) it is a deliberate, valid configuration.
+	stand := helmTemplate(t, "templates/deployment.yaml", "--set", "eventBus.credentialsSecret.enabled=false", "--set", "nats.url=nats://nats:4222")
+	if bytes.Contains(stand, []byte("BOOTH_NATS_CREDS_FILE")) || bytes.Contains(stand, []byte("event-bus-credentials")) {
+		t.Errorf("credential wiring rendered with the credentials Secret disabled:\n%s", stand)
+	}
+	if !bytes.Contains(stand, []byte(`"nats://nats:4222"`)) {
+		t.Errorf("stand-in bus URL not rendered:\n%s", stand)
 	}
 }
 

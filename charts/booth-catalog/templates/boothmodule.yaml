@@ -25,6 +25,15 @@ spec:
   requiredScopes:
     - catalog.read
     - catalog.write
+  {{- if .Values.eventBus.enabled }}
+  # Event-bus usage (ADR 0050). booth-core derives this module's NATS credential — and its
+  # per-subject permissions — from exactly this, and writes it to the Secret the Deployment
+  # mounts. A module that omits `events` gets no credential and cannot connect to the bus at all,
+  # which is how the dashboard subscription silently failed before this was declared.
+  events:
+    subscribe:
+      - dashboard.*
+  {{- end }}
   serviceRef:
     name: {{ include "booth-catalog.fullname" . }}
     port: {{ .Values.service.port }}

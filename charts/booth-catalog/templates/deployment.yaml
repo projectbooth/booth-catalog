@@ -16,7 +16,9 @@ spec:
     spec:
       serviceAccountName: {{ include "booth-catalog.serviceAccountName" . }}
       # No token: this module never talks to the Kubernetes API (it holds no Secrets and needs
-      # no RBAC), so a mounted service-account token would only be attack surface.
+      # no RBAC), so a mounted service-account token would only be attack surface. The event-bus
+      # credential below is an ordinary mounted Secret written for us by booth-core, not something
+      # we fetch.
       automountServiceAccountToken: false
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
@@ -45,9 +47,26 @@ spec:
                 secretKeyRef:
                   name: {{ required "postgres.dsnSecret.name is required: booth-catalog keeps its data in PostgreSQL (ADR 0014)" .Values.postgres.dsnSecret.name }}
                   key: {{ .Values.postgres.dsnSecret.key }}
-            {{- with .Values.nats.url }}
+            {{- if .Values.eventBus.enabled }}
+            {{- if .Values.eventBus.credentialsSecret.enabled }}
+            # The credential booth-core minted for this module's declared `events` (ADR 0050). The
+            # file is re-read on every reconnect, so core's in-place renewal is picked up.
+            - name: BOOTH_NATS_CREDS_FILE
+              value: /etc/booth/event-bus/nats.creds
+            {{- if .Values.nats.url }}
             - name: BOOTH_NATS_URL
-              value: {{ . | quote }}
+              value: {{ .Values.nats.url | quote }}
+            {{- else }}
+            - name: BOOTH_NATS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.eventBus.credentialsSecret.name }}
+                  key: url
+            {{- end }}
+            {{- else }}
+            - name: BOOTH_NATS_URL
+              value: {{ required "nats.url is required when eventBus.credentialsSecret.enabled is false: with no credentials Secret to take the address from, the event bus has nowhere to connect (set eventBus.enabled=false to leave the event bus out on purpose)" .Values.nats.url | quote }}
+            {{- end }}
             {{- end }}
             - name: BOOTH_CATALOG_MAX_CODE_BYTES
               value: {{ .Values.maxCodeSourceBytes | int64 | quote }}
@@ -63,3 +82,22 @@ spec:
               port: http
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if and .Values.eventBus.enabled .Values.eventBus.credentialsSecret.enabled }}
+          volumeMounts:
+            # A directory mount, deliberately not a single-file mount: the kubelet updates a mounted Secret in
+            # place when core renews the credential, but never a single-file (sub-path) mount of one.
+            - name: event-bus-credentials
+              mountPath: /etc/booth/event-bus
+              readOnly: true
+          {{- end }}
+      {{- if and .Values.eventBus.enabled .Values.eventBus.credentialsSecret.enabled }}
+      volumes:
+        - name: event-bus-credentials
+          secret:
+            secretName: {{ .Values.eventBus.credentialsSecret.name }}
+            # Not `optional`: if booth-core hasn't written the credential the pod waits, loudly
+            # (ContainerCreating with a mount error), instead of starting without one.
+            items:
+              - key: nats.creds
+                path: nats.creds
+      {{- end }}

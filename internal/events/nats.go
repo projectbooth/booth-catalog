@@ -27,6 +27,14 @@ const DefaultConsumerName = "booth-catalog-dashboards"
 type SubscriberConfig struct {
 	// URL is the NATS server, e.g. nats://booth-core-nats:4222.
 	URL string
+	// CredentialsFile is the path to the NATS ".creds" file booth-core provisions for this module
+	// (ADR 0050: Secret "booth-event-bus-credentials", key "nats.creds"). Empty connects without
+	// credentials, which only works against a bus with authentication switched off (local
+	// development, or a test stand-in) — booth-core's bus refuses it.
+	//
+	// It is re-read on every (re)connect, never cached: core renews the credential in place
+	// before it expires, and a long-running catalog has to pick the renewed one up.
+	CredentialsFile string
 	// StreamName defaults to StreamName; Consumer to DefaultConsumerName. Overridable so
 	// tests can run several subscribers side by side.
 	StreamName string
@@ -176,15 +184,43 @@ func (s *Subscriber) Run(ctx context.Context) {
 // session runs one connection's lifetime. It returns nil only when ctx is cancelled.
 func (s *Subscriber) session(ctx context.Context) error {
 	s.setStatus(StateConnecting, "")
-	nc, err := nats.Connect(s.cfg.URL,
+	// Closed is signalled when the client library gives up on the connection for good — most
+	// importantly when the credential has expired and the server keeps refusing it. Without
+	// this the session would sit on a dead connection forever, still reporting "subscribed".
+	// Ending the session sends Run's loop back to connect again, which re-reads the
+	// credentials file and so picks up a renewed credential.
+	closed := make(chan struct{}, 1)
+	opts := []nats.Option{
 		nats.Name("booth-catalog"),
-		// Once connected, let the client library ride out a broker restart itself; the
-		// outer loop only handles failing to connect in the first place and the stream or
-		// consumer disappearing.
+		// Once connected, let the client library ride out a broker restart itself; the outer
+		// loop handles failing to connect in the first place, the connection being closed for
+		// good, and the stream or consumer disappearing.
 		nats.MaxReconnects(-1),
-		nats.ReconnectWait(2*time.Second),
-		nats.Timeout(5*time.Second),
-	)
+		nats.ReconnectWait(2 * time.Second),
+		nats.Timeout(5 * time.Second),
+		nats.ClosedHandler(func(*nats.Conn) {
+			select {
+			case closed <- struct{}{}:
+			default:
+			}
+		}),
+		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+			if err != nil {
+				s.cfg.Logf("events: disconnected from NATS: %v", err)
+			}
+		}),
+		nats.ReconnectHandler(func(c *nats.Conn) { s.cfg.Logf("events: reconnected to NATS at %s", c.ConnectedUrl()) }),
+		// The server reports a denied publish or subscribe asynchronously, as a "permissions
+		// violation" — the one signal that this module's declared events (its manifest) don't
+		// cover something it tried to do. Without logging it, that failure is just a timeout.
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			s.cfg.Logf("events: NATS error: %v", err)
+		}),
+	}
+	if s.cfg.CredentialsFile != "" {
+		opts = append(opts, nats.UserCredentials(s.cfg.CredentialsFile))
+	}
+	nc, err := nats.Connect(s.cfg.URL, opts...)
 	if err != nil {
 		return fmt.Errorf("connecting to NATS at %s: %w", s.cfg.URL, err)
 	}
@@ -243,6 +279,8 @@ func (s *Subscriber) session(ctx context.Context) error {
 		return nil
 	case err := <-restart:
 		return fmt.Errorf("consumer lost: %w", err)
+	case <-closed:
+		return errors.New("NATS connection closed (an expired or rejected credential, or the server went away for good)")
 	}
 }
 

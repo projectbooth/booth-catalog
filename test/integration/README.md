@@ -28,6 +28,15 @@ Everything else — the stores against real PostgreSQL, the HTTP API and its rol
 processor, and the JetStream consumer's durability/retry/poison-message behaviour against an
 embedded nats-server — is covered by the per-push unit/contract layer.
 
+## What this deliberately doesn't cover: the authenticated bus (ADR 0050)
+
+This job's stand-in NATS has no authentication, and there is no `booth-core` here to mint credentials, so it
+installs with `eventBus.credentialsSecret.enabled=false` and gives the address by hand. It therefore checks
+that the manifest's `events.subscribe` survives a real API server (a CRD that doesn't know the field prunes it
+silently — the vendored CRD is a copy of booth-core's and must be refreshed when core's changes) but not that a
+credential Secret is mounted and used. That path is tested in `internal/events` (a real nats-server in JWT
+operator mode, with the grants core derives) and end to end by `booth-e2e`'s `smoke.7-dashboard-event`.
+
 ## What this doesn't cover yet
 
 - **Deploying alongside a real, pinned `booth-core`** and exercising the catalog through its

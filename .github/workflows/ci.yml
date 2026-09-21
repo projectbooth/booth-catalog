@@ -103,8 +103,7 @@ jobs:
           helm lint . \
             --set oidc.issuerUrl=https://keycloak.example.com/realms/booth \
             --set oidc.clientId=booth-catalog \
-            --set postgres.dsnSecret.name=booth-catalog-db \
-            --set nats.url=nats://booth-core-nats:4222
+            --set postgres.dsnSecret.name=booth-catalog-db
 
       - name: helm template (render check)
         working-directory: charts/booth-catalog
@@ -113,8 +112,7 @@ jobs:
             --namespace booth-catalog \
             --set oidc.issuerUrl=https://keycloak.example.com/realms/booth \
             --set oidc.clientId=booth-catalog \
-            --set postgres.dsnSecret.name=booth-catalog-db \
-            --set nats.url=nats://booth-core-nats:4222 > /dev/null
+            --set postgres.dsnSecret.name=booth-catalog-db > /dev/null
 
   image-build:
     # Catches a broken Dockerfile on the PR that breaks it, not at release time. Not pushed.

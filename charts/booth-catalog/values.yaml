@@ -29,11 +29,31 @@ postgres:
     name: ""
     key: dsn
 
-# The event bus (NATS, ADR 0021) the dashboard.created/updated/deleted subscription connects
-# to. There is no safe default: booth-core's bundled NATS is named after core's Helm release
-# (nats://<core-release>-nats:4222), so the operator must say. Leaving it empty disables the
-# subscription — datasets and code work fully, but no dashboards are ever indexed.
+# The event bus (NATS, ADR 0021) the dashboard.created/updated/deleted subscription uses.
+#
+# booth-core's bus authenticates every connection (ADR 0049/0050): the module's manifest declares
+# `events: {subscribe: [dashboard.*]}` (rendered into the BoothModule below), and booth-core answers
+# by writing a Secret into this namespace holding a credential scoped to exactly that plus the
+# bus's in-cluster URL. The pod mounts it and connects with it; there is nothing to configure.
+#
+# The pod will not start until booth-core has written the Secret (it does so when it sees the
+# BoothModule this chart creates) — deliberately: a catalog that came up without credentials would
+# look healthy while indexing no dashboards at all, which is exactly the silent failure this avoids.
+eventBus:
+  # false leaves the event bus out entirely: no `events` on the manifest, no credential, no
+  # subscription. Datasets and code work fully; no dashboards are ever indexed. It is an explicit
+  # choice, never the result of forgetting to set something.
+  enabled: true
+  credentialsSecret:
+    # Read the credential from booth-core's Secret (the normal case). Set false only against a bus
+    # with authentication off (a test stand-in, local development), and then nats.url is required.
+    enabled: true
+    # The name booth-core gives it (ADR 0050); overridable only to match a core that names it otherwise.
+    name: booth-event-bus-credentials
+
 nats:
+  # Overrides the URL in the credentials Secret. Leave empty in a real install: core writes the right
+  # in-cluster address there. Required when eventBus.credentialsSecret.enabled is false.
   url: ""
 
 # Cap on one code version's source, in bytes.

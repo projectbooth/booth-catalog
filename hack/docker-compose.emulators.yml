@@ -9,6 +9,12 @@
 #
 # NATS/JetStream needs no container: the event-subscription tests embed a real nats-server
 # in-process. Port 15433 (not 15432) so this can run alongside booth-storage's test Postgres.
+# An explicit project name: Compose otherwise names the project after this file's directory, and
+# every booth-* repo keeps its test compose file in a directory called "hack" — so their containers,
+# networks and volumes would all land in one project, and one repo's `up`/`down` would recreate or
+# remove another's.
+name: booth-catalog-test
+
 services:
   postgres:
     image: postgres:16-alpine
