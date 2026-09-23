@@ -56,6 +56,13 @@ export default defineConfig(({ command }) => ({
         rewrite: (path) => path.replace(/^\/modules\/storage/, ""),
         configure: gatewayHeaders,
       },
+      // booth-core's own API (the owner picker's directory search), reached directly at the
+      // shell's origin with no /modules prefix to strip — core reads the browser's X-Workspace
+      // header itself, so unlike the two proxies above this needs no header translation.
+      "/api": {
+        target: process.env.BOOTH_CORE_DEV_BACKEND ?? "http://localhost:8082",
+        changeOrigin: true,
+      },
     },
   },
   test: {

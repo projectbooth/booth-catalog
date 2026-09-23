@@ -1,7 +1,7 @@
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CAT, STO, codeEntry, dashboard, dataset, mockFetch, page, renderApp } from "./testUtils";
+import { CAT, CORE, STO, codeEntry, dashboard, dataset, mockFetch, page, renderApp } from "./testUtils";
 
 afterEach(() => {
   cleanup();
@@ -347,6 +347,61 @@ describe("code", () => {
     await screen.findByRole("heading", { name: "clean_emails" });
     expect(m.called("POST", `${CAT}/code`)[0].body).toMatchObject({ name: "clean_emails", language: "Python", version: "1.0.0", source: "def f(): pass" });
     expect(window.location.pathname).toBe("/catalog/code/c-new");
+  });
+
+  // ADR 0064's known languages (python, sql) are offered, but the field stays a free-text input:
+  // typing anything else (as the test above does with "Python") is still accepted.
+  it("offers booth-pipeline's known languages as suggestions, not a hard constraint", async () => {
+    mockFetch({ [`GET ${CAT}/config`]: config });
+    renderApp("/catalog/code/new");
+    await screen.findByLabelText("Language");
+    const options = Array.from(document.querySelectorAll("#code-lang-options option")).map((o) => (o as HTMLOptionElement).value);
+    expect(options).toEqual(["python", "sql"]);
+  });
+
+  it("suggests owners from booth-core's directory and stores the resolved sub when one is picked", async () => {
+    const m = mockFetch({
+      [`GET ${CAT}/config`]: config,
+      [`GET ${CORE}/users`]: { json: [{ sub: "sub-alice", displayName: "Alice Smith", email: "alice@example.com", lastSeenAt: "2026-09-01T00:00:00Z" }] },
+      [`POST ${CAT}/code`]: { status: 201, json: codeEntry({ id: "c-new" }) },
+      [`GET ${CAT}/code/c-new`]: { json: codeEntry({ id: "c-new" }) },
+      [`GET ${CAT}/code/c-new/versions`]: { json: { versions } },
+      [`GET ${CAT}/code/c-new/versions/latest`]: { json: { ...versions[0], source: "x" } },
+    });
+    renderApp("/catalog/code/new");
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText(/^Name/), "clean_emails");
+    await user.type(screen.getByLabelText("Owner"), "ali");
+    await user.click(await screen.findByRole("option", { name: /Alice Smith/ }));
+    expect(screen.getByLabelText("Owner")).toHaveValue("sub-alice");
+    await user.type(screen.getByLabelText(/^Source/), "def f(): pass");
+    await user.click(screen.getByRole("button", { name: "Publish" }));
+
+    await screen.findByRole("heading", { name: "clean_emails" });
+    expect(m.called("POST", `${CAT}/code`)[0].body).toMatchObject({ owner: "sub-alice" });
+    expect(m.called("GET", `${CORE}/users`)[0].query.get("q")).toBe("ali");
+  });
+
+  it("keeps typed text as the owner when nothing in the directory matches (or the directory can't be reached)", async () => {
+    const m = mockFetch({
+      [`GET ${CAT}/config`]: config,
+      [`GET ${CORE}/users`]: { status: 404, text: "not found" },
+      [`POST ${CAT}/code`]: { status: 201, json: codeEntry({ id: "c-new" }) },
+      [`GET ${CAT}/code/c-new`]: { json: codeEntry({ id: "c-new" }) },
+      [`GET ${CAT}/code/c-new/versions`]: { json: { versions } },
+      [`GET ${CAT}/code/c-new/versions/latest`]: { json: { ...versions[0], source: "x" } },
+    });
+    renderApp("/catalog/code/new");
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText(/^Name/), "clean_emails");
+    await user.type(screen.getByLabelText("Owner"), "data-team");
+    await waitFor(() => expect(m.called("GET", `${CORE}/users`).length).toBeGreaterThan(0));
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText(/^Source/), "def f(): pass");
+    await user.click(screen.getByRole("button", { name: "Publish" }));
+
+    await screen.findByRole("heading", { name: "clean_emails" });
+    expect(m.called("POST", `${CAT}/code`)[0].body).toMatchObject({ owner: "data-team" });
   });
 
   it("warns before submit when the source is over the limit, using the server's own limit", async () => {

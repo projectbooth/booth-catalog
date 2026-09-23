@@ -14,6 +14,7 @@ import type {
   StorageBackend,
   StorageEntry,
   TagCount,
+  UserSummary,
   VersionInput,
   VersionSummary,
   AssetType,
@@ -30,6 +31,12 @@ const CATALOG = "/modules/catalog/api";
 // picker and the "check location" action (docs/decisions/0002). The catalog's backend never
 // calls storage.
 const STORAGE = "/modules/storage/api";
+// booth-core's own API, not a module's — the gateway serves it at the shell's origin with no
+// /modules/{id} prefix, the same reason booth-design's own client calls a bare "/api/me". A
+// lookup failing (an older deployment with no directory yet, or core just being unreachable)
+// simply means the owner picker below falls back to free text, the same degradation
+// LocationPicker already has for booth-storage being unavailable.
+const CORE = "/api";
 
 export type GetAccessToken = () => string | null;
 
@@ -187,6 +194,14 @@ export const listDashboards = (ctx: ApiContext, f: DashboardFilter = {}) =>
   request<Page<Dashboard>>(ctx, CATALOG, `/dashboards${query({ q: f.q, owner: f.owner, source: f.source, limit: f.limit, offset: f.offset })}`);
 
 export const getDashboard = (ctx: ApiContext, id: string) => request<DashboardDetail>(ctx, CATALOG, `/dashboards/${seg(id)}`);
+
+// ---- booth-core: owner directory (read-only; used by the owner picker) --------
+
+/** GET /api/users?q= (ADR 0047/0052): people in the caller's active workspace whose name,
+ *  username or email contains q. Callers debounce and skip an empty q — there's nothing useful
+ *  to suggest before the person has typed something. */
+export const searchUsers = (ctx: ApiContext, q: string) =>
+  request<UserSummary[]>(ctx, CORE, `/users${query({ q, limit: 8 })}`);
 
 // ---- booth-storage: location picker and live check -----------------------------
 

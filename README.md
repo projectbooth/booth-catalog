@@ -145,7 +145,11 @@ Local run without a database: `BOOTH_CATALOG_DEV_MEMORY=true` (state vanishes on
 subscription (against a bus with authentication off; booth-core's bus also needs
 `BOOTH_NATS_CREDS_FILE`). For a real login, use `booth-architecture/local-dev`'s Keycloak. `web`'s
 `npm run dev` is a dev harness: paste an access token into it; its Vite proxy strips the gateway
-prefix **and** turns `X-Workspace` into `X-Booth-Workspace`, as the real gateway does.
+prefix **and** turns `X-Workspace` into `X-Booth-Workspace`, as the real gateway does. The code
+catalog's owner picker calls booth-core's own `/api/users` directly (no `/modules` prefix, no
+header translation — core reads the browser's `X-Workspace` itself); point `BOOTH_CORE_DEV_BACKEND`
+at a running core to get real suggestions locally, or leave it unset and the picker just falls
+back to free text like it does when core is unreachable.
 
 CI: `ci.yml` (every push/PR), `integration.yml` (kind, merge-to-main + nightly),
 `publish.yml` (`catalog-ui-v*` tags → npm), `release.yml` (`v*.*.*` tags → image + chart).

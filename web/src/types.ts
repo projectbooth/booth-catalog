@@ -186,3 +186,16 @@ export interface StorageEntry {
   path: string;
   isDir?: boolean;
 }
+
+// ---- booth-core (read-only; used by the owner picker) ------------------------
+
+/** A directory entry (ADR 0047), scoped by the server to the caller's active workspace
+ *  (ADR 0052). Omits the entry's own workspace list, matching what the server sends. */
+export interface UserSummary {
+  sub: string;
+  preferredUsername?: string;
+  name?: string;
+  email?: string;
+  displayName: string;
+  lastSeenAt: string;
+}

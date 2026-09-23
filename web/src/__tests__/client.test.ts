@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, checkLocation, createDataset, deleteDataset, listDatasets } from "../api/client";
-import { CAT, STO, mockFetch } from "./testUtils";
+import { ApiError, checkLocation, createDataset, deleteDataset, listDatasets, searchUsers } from "../api/client";
+import { CAT, CORE, STO, mockFetch } from "./testUtils";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -63,6 +63,18 @@ describe("request plumbing", () => {
     const m = mockFetch({});
     await deleteDataset(ctx(), "a/b c").catch(() => undefined);
     expect(m.calls[0].path).toBe("/modules/catalog/api/datasets/a%2Fb%20c");
+  });
+});
+
+describe("searchUsers (booth-core's own API, not a module — no /modules prefix)", () => {
+  it("hits /api/users directly with q and a small limit", async () => {
+    const m = mockFetch({ [`GET ${CORE}/users`]: { json: [{ sub: "s1", displayName: "Alice", lastSeenAt: "2026-09-01T00:00:00Z" }] } });
+    const users = await searchUsers(ctx(), "ali");
+    expect(m.calls[0].path).toBe("/api/users");
+    expect(m.calls[0].query.get("q")).toBe("ali");
+    expect(m.calls[0].query.get("limit")).toBe("8");
+    expect(m.calls.some((c) => c.path.startsWith("/modules/"))).toBe(false);
+    expect(users).toEqual([{ sub: "s1", displayName: "Alice", lastSeenAt: "2026-09-01T00:00:00Z" }]);
   });
 });
 

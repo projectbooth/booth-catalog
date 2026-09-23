@@ -1,12 +1,26 @@
 import { useState, type FormEvent } from "react";
 import { ApiError, createCode, fetchConfig, getCode, publishVersion, updateCode } from "../api/client";
+import { OwnerPicker } from "../components/OwnerPicker";
 import { Async, Banner, Button, Field, PageHeader, inputClass } from "../components/ui";
 import type { ViewCtx } from "../context";
 import { formatBytes } from "../format";
 import { errorMessage, useLoad } from "../hooks";
+import { KNOWN_LANGUAGES } from "../languages";
 import type { CodeEntry } from "../types";
 
 const sourceClass = `${inputClass} font-mono`;
+
+/** The datalist backing every language field below: a picker for the common case, `booth-pipeline`'s
+ *  known languages, without shutting out free text for code that isn't meant to run there at all. */
+function LanguageOptions({ id }: { id: string }) {
+  return (
+    <datalist id={id}>
+      {KNOWN_LANGUAGES.map((l) => (
+        <option key={l} value={l} />
+      ))}
+    </datalist>
+  );
+}
 
 /** Shared submit plumbing: busy flag, and API errors mapped to per-field messages or a banner. */
 function useSubmit(ownFields: string[]) {
@@ -52,12 +66,22 @@ export function CodeCreateForm({ v }: { v: ViewCtx }) {
         {(p) => <textarea {...p} className={inputClass} rows={2} value={f.description} onChange={(e) => set("description", e.target.value)} />}
       </Field>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <Field id="code-lang" label="Language" error={s.fieldError("language")} help="Optional label, e.g. python or sql.">
-          {(p) => <input {...p} className={inputClass} value={f.language} onChange={(e) => set("language", e.target.value)} />}
+        <Field id="code-lang" label="Language" error={s.fieldError("language")} help="Pick one, or type anything — it's just a label.">
+          {(p) => (
+            <>
+              <input {...p} className={inputClass} list="code-lang-options" value={f.language} onChange={(e) => set("language", e.target.value)} />
+              <LanguageOptions id="code-lang-options" />
+            </>
+          )}
         </Field>
-        <Field id="code-owner" label="Owner" error={s.fieldError("owner")} help="A person or team. Leave empty to make it you.">
-          {(p) => <input {...p} className={inputClass} value={f.owner} onChange={(e) => set("owner", e.target.value)} />}
-        </Field>
+        <OwnerPicker
+          api={v.api}
+          id="code-owner"
+          value={f.owner}
+          onChange={(val) => set("owner", val)}
+          error={s.fieldError("owner")}
+          help="Type to search people in this workspace, or type any label. Leave empty to make it you."
+        />
       </div>
 
       <VersionFields
@@ -212,12 +236,22 @@ function MetaEditor({ v, entry }: { v: ViewCtx; entry: CodeEntry }) {
         {(p) => <textarea {...p} className={inputClass} rows={3} value={f.description} onChange={(e) => set("description", e.target.value)} />}
       </Field>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <Field id="edit-lang" label="Language" error={s.fieldError("language")}>
-          {(p) => <input {...p} className={inputClass} value={f.language} onChange={(e) => set("language", e.target.value)} />}
+        <Field id="edit-lang" label="Language" error={s.fieldError("language")} help="Pick one, or type anything — it's just a label.">
+          {(p) => (
+            <>
+              <input {...p} className={inputClass} list="edit-lang-options" value={f.language} onChange={(e) => set("language", e.target.value)} />
+              <LanguageOptions id="edit-lang-options" />
+            </>
+          )}
         </Field>
-        <Field id="edit-owner" label="Owner" error={s.fieldError("owner")} help="Leave empty to keep the current owner.">
-          {(p) => <input {...p} className={inputClass} value={f.owner} onChange={(e) => set("owner", e.target.value)} />}
-        </Field>
+        <OwnerPicker
+          api={v.api}
+          id="edit-owner"
+          value={f.owner}
+          onChange={(val) => set("owner", val)}
+          error={s.fieldError("owner")}
+          help="Type to search people in this workspace, or type any label. Leave empty to keep the current owner."
+        />
       </div>
       <div className="flex gap-2">
         <Button type="submit" variant="primary" disabled={s.busy}>

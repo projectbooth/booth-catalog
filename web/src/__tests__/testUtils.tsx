@@ -47,6 +47,7 @@ export function mockFetch(routes: Record<string, Route>) {
 
 export const CAT = "/modules/catalog/api";
 export const STO = "/modules/storage/api";
+export const CORE = "/api";
 
 /** Renders the whole app at `path`, as booth-design's shell would mount it. */
 export function renderApp(path: string, role: WorkspaceRole = "editor", token: string | null = "tok") {
