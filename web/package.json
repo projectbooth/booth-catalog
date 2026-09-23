@@ -1,6 +1,6 @@
 {
   "name": "@projectbooth/catalog-ui",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Native-mode Catalog UI (ADR 0030): browse and register datasets, publish and browse versioned code, browse dashboards with lineage, and search across all three — as a component booth-design mounts via its src/lib/nativeModules.ts registry.",
   "license": "UNLICENSED",
