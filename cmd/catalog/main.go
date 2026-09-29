@@ -53,10 +53,11 @@ func run() error {
 		return fmt.Errorf("creating OIDC verifier: %w", err)
 	}
 
-	// The dashboard subscription runs beside the HTTP server, not inside its startup path: a
-	// NATS outage (or booth-core not having created the stream yet) must never keep the
-	// catalog from serving datasets and code. Subscriber.Run retries on its own and reports
-	// its state through /healthz.
+	// The dashboard and table subscriptions run beside the HTTP server, not inside its startup
+	// path: a NATS outage (or booth-core not having created the stream yet) must never keep the
+	// catalog from serving datasets and code. Subscriber.Run retries on its own and reports its
+	// state through /healthz. The two are independent Subscribers (ADR 0085) — a durable
+	// consumer and failure domain each — over the same connection details.
 	deps := api.Deps{Verifier: verifier, Catalog: catalog}
 	if cfg.WorkloadIssuerURL != "" {
 		workloadCfg := cfg.OIDC
@@ -64,11 +65,18 @@ func run() error {
 		deps.Verifier = auth.ChainVerifier{verifier, auth.NewWorkloadVerifier(ctx, workloadCfg)}
 	}
 	if cfg.NATSURL == "" {
-		log.Print("BOOTH_NATS_URL is not set: the dashboard event subscription is disabled, so no dashboards will be indexed")
+		log.Print("BOOTH_NATS_URL is not set: the dashboard and table event subscriptions are disabled, so no dashboards or Iceberg tables will be indexed")
 	} else {
 		sub := events.NewSubscriber(events.SubscriberConfig{URL: cfg.NATSURL, CredentialsFile: cfg.NATSCredsFile}, events.NewProcessor(catalog.Dashboards))
 		deps.Events = sub
 		go sub.Run(ctx)
+
+		tableSub := events.NewSubscriber(events.SubscriberConfig{
+			URL: cfg.NATSURL, CredentialsFile: cfg.NATSCredsFile,
+			SubjectFilter: events.SubjectFilterTables, Consumer: events.DefaultConsumerNameTables,
+		}, events.NewTableProcessor(catalog.Data))
+		deps.TableEvents = tableSub
+		go tableSub.Run(ctx)
 	}
 
 	server := &http.Server{

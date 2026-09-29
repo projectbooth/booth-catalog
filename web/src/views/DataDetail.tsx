@@ -36,9 +36,21 @@ export function DataDetail({ v, id }: { v: ViewCtx; id: string }) {
           <>
             <PageHeader
               title={d.name}
-              subtitle="Dataset"
+              subtitle={
+                d.format === "iceberg" ? (
+                  <>
+                    Dataset <Chip tone="indigo">Iceberg</Chip>
+                  </>
+                ) : (
+                  "Dataset"
+                )
+              }
               actions={
+                // An Iceberg table exists only because booth-lakehouse published an event about
+                // it (ADR 0085) — the backend refuses a manual edit or delete here, the same
+                // reason dashboards have no write controls at any role.
                 v.canWrite &&
+                d.format !== "iceberg" &&
                 (confirming ? (
                   <>
                     <span className="text-sm text-slate-600 dark:text-slate-300">Delete this catalog entry? The data in storage is not touched.</span>
@@ -79,6 +91,22 @@ export function DataDetail({ v, id }: { v: ViewCtx; id: string }) {
                 )}
               </Meta>
             </dl>
+
+            {d.format === "iceberg" && d.table && (
+              <Section title="Iceberg table">
+                <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                  <Meta label="Namespace">{d.table.namespace}</Meta>
+                  <Meta label="Table name">{d.table.name}</Meta>
+                  <Meta label="UUID">
+                    <code className="text-xs">{d.table.uuid}</code>
+                  </Meta>
+                  <Meta label="Current snapshot">{d.table.currentSnapshotId ?? "— (no snapshot yet)"}</Meta>
+                </dl>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Indexed from booth-lakehouse; managed there, not here. Snapshot history lives in booth-lakehouse, not the catalog.
+                </p>
+              </Section>
+            )}
 
             <Section title="Storage location">
               <p className="font-mono text-sm text-slate-800 dark:text-slate-200">{formatLocation(d.location)}</p>

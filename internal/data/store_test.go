@@ -23,6 +23,9 @@ func sample(ws, name string) Dataset {
 		Schema:      []Column{{Name: "id", Type: "bigint", Description: "key"}, {Name: "amount", Type: "decimal(10,2)"}},
 		Tags:        []string{"finance", "pii"},
 		Owner:       "alice", CreatedBy: "sub-alice", CreatedAt: now, UpdatedAt: now,
+		// Every Store.Create caller is expected to pass this (Service.Create always does);
+		// the Postgres store's INSERT also leaves the column to this same DEFAULT regardless.
+		Format: FormatFile,
 	}
 }
 
@@ -430,6 +433,122 @@ func runStoreTests(t *testing.T, newStore func(t *testing.T) Store) {
 	t.Run("Ping", func(t *testing.T) {
 		if err := newStore(t).Ping(ctx); err != nil {
 			t.Errorf("Ping: %v", err)
+		}
+	})
+
+	// ApplyTable/RemoveTable are ADR 0085's Iceberg-table half of this Store: identical
+	// last-writer-wins/tombstone semantics to internal/dashboards' Apply/Remove, but layered
+	// onto the same datasets table and its UNIQUE(workspace, name) — see ApplyTable's
+	// asset.ErrExists case below, which internal/dashboards has no equivalent of.
+	t.Run("ApplyTableAndRemoveTable", func(t *testing.T) {
+		s := newStore(t)
+		base := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+		at := func(n int) time.Time { return base.Add(time.Duration(n) * time.Minute) }
+		snap := int64(7)
+		up := func(uuid, ns, name string, when int) TableUpsert {
+			return TableUpsert{
+				Workspace: "acme", SourceModule: "lakehouse", Namespace: ns, Name: name, UUID: uuid,
+				Location: asset.Location{BackendID: "lake", Path: "warehouse/" + ns + "/" + name},
+				Schema:   []Column{{Name: "id", Type: "long"}}, CurrentSnapshotID: &snap,
+				At: at(when), NewID: asset.NewID(), ReceivedAt: at(1000 + when),
+			}
+		}
+		findByName := func(name string) (Dataset, bool) {
+			page, err := s.List(ctx, "acme", ListFilter{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, d := range page.Items {
+				if d.Name == name {
+					return d, true
+				}
+			}
+			return Dataset{}, false
+		}
+
+		u := up("tbl-1", "sales", "orders", 0)
+		applied, err := s.ApplyTable(ctx, u)
+		if err != nil || !applied {
+			t.Fatalf("ApplyTable(create) = %v, %v; want applied", applied, err)
+		}
+		d, ok := findByName("sales.orders")
+		if !ok {
+			t.Fatal("indexed table not found by its computed name")
+		}
+		if d.Format != FormatIceberg || d.Table == nil || d.Table.UUID != "tbl-1" || d.Table.CurrentSnapshotID == nil || *d.Table.CurrentSnapshotID != 7 {
+			t.Errorf("indexed dataset = %+v", d)
+		}
+		if got, err := s.Get(ctx, "acme", d.ID); err != nil || got.ID != d.ID {
+			t.Errorf("Get(%s) = %+v, %v", d.ID, got, err)
+		}
+
+		// A stale (older) event is a no-op.
+		stale := u
+		stale.Name, stale.At = "ignored", at(-5)
+		if applied, err = s.ApplyTable(ctx, stale); err != nil || applied {
+			t.Errorf("stale ApplyTable = %v, %v; want not applied", applied, err)
+		}
+
+		// The computed name colliding with an unrelated, already-registered dataset is a real
+		// error (ErrExists), not something retrying fixes.
+		mustCreate(t, s, sample("acme", "eng.metrics"))
+		collide := up("tbl-2", "eng", "metrics", 1)
+		if _, err := s.ApplyTable(ctx, collide); !errors.Is(err, asset.ErrExists) {
+			t.Errorf("name-colliding ApplyTable = %v, want ErrExists", err)
+		}
+
+		// Renaming (namespace.name changes) keeps the same row: identity is (module, UUID).
+		renamed := up("tbl-1", "sales", "orders_v2", 2)
+		if applied, err = s.ApplyTable(ctx, renamed); err != nil || !applied {
+			t.Fatalf("rename ApplyTable = %v, %v", applied, err)
+		}
+		if _, ok := findByName("sales.orders"); ok {
+			t.Error("old name still present after rename")
+		}
+		got, err := s.Get(ctx, "acme", d.ID)
+		if err != nil || got.Name != "sales.orders_v2" {
+			t.Errorf("after rename: %+v, %v", got, err)
+		}
+
+		// RemoveTable tombstones: gone from every read.
+		applied, err = s.RemoveTable(ctx, "acme", "lakehouse", "tbl-1", at(3))
+		if err != nil || !applied {
+			t.Fatalf("RemoveTable = %v, %v; want applied", applied, err)
+		}
+		if _, err := s.Get(ctx, "acme", d.ID); !errors.Is(err, asset.ErrNotFound) {
+			t.Errorf("Get after delete: %v, want ErrNotFound", err)
+		}
+		if _, ok := findByName("sales.orders_v2"); ok {
+			t.Error("tombstoned table still listed")
+		}
+
+		// A stale created/updated from before the delete cannot resurrect it.
+		lateStale := up("tbl-1", "sales", "resurrected", 2)
+		if applied, err = s.ApplyTable(ctx, lateStale); err != nil || applied {
+			t.Errorf("stale ApplyTable after delete = %v, %v; want not applied", applied, err)
+		}
+		if _, ok := findByName("sales.resurrected"); ok {
+			t.Error("a stale event resurrected a tombstoned table")
+		}
+
+		// A genuinely newer event (the table recreated) does revive it, as a fresh "life".
+		revived := up("tbl-1", "sales", "orders_v3", 4)
+		if applied, err = s.ApplyTable(ctx, revived); err != nil || !applied {
+			t.Fatalf("revive ApplyTable = %v, %v", applied, err)
+		}
+		if _, ok := findByName("sales.orders_v3"); !ok {
+			t.Error("revived table not listed")
+		}
+
+		// Removing a table the catalog never saw records a tombstone rather than erroring, and
+		// that tombstone then blocks a stale late event the same way.
+		applied, err = s.RemoveTable(ctx, "acme", "lakehouse", "never-seen", at(5))
+		if err != nil || !applied {
+			t.Errorf("RemoveTable of an unseen table = %v, %v; want applied", applied, err)
+		}
+		neverSeenLate := up("never-seen", "x", "y", 1)
+		if applied, err = s.ApplyTable(ctx, neverSeenLate); err != nil || applied {
+			t.Errorf("late event for a phantom tombstone = %v, %v; want not applied", applied, err)
 		}
 	})
 }

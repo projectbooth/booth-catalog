@@ -49,8 +49,12 @@ type EventStatus interface {
 type Deps struct {
 	Verifier auth.TokenVerifier
 	Catalog  *app.Services
-	// Events is nil when the event subscription is disabled (no NATS URL configured).
+	// Events is nil when the dashboard.* subscription is disabled (no NATS URL configured).
 	Events EventStatus
+	// TableEvents is nil when the table.* subscription is disabled (ADR 0085; no NATS URL
+	// configured — the same gate as Events, since both run off the same NATS connection
+	// details).
+	TableEvents EventStatus
 }
 
 func NewRouter(deps Deps) http.Handler {
@@ -134,8 +138,8 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 
 	// The status CODE follows the database only. A NATS outage must not fail the readiness
 	// probe: that would pull the pod out of rotation and take browsing and search down with
-	// it, for a fault that only makes *dashboards* go stale. It is reported in the body, as
-	// "degraded", so it is visible to anyone (or anything) reading it.
+	// it, for a fault that only makes *dashboards and tables* go stale. It is reported in the
+	// body, as "degraded", so it is visible to anyone (or anything) reading it.
 	checks := map[string]string{"database": "ok"}
 	status := "ok"
 	if s.Events == nil {
@@ -147,16 +151,33 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 			status = "degraded"
 		}
 	}
+	if s.TableEvents == nil {
+		checks["tableEventBus"] = "disabled"
+	} else {
+		st := s.TableEvents.Status()
+		checks["tableEventBus"] = string(st.State)
+		if st.State != events.StateSubscribed {
+			status = "degraded"
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": status, "checks": checks})
 }
 
-// handleConfig tells the UI the limits it should enforce up front, and whether dashboards can
-// currently be expected to be fresh.
+// handleConfig tells the UI the limits it should enforce up front, and whether dashboards and
+// Iceberg tables can currently be expected to be fresh.
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	out := map[string]any{"maxCodeSourceBytes": s.Catalog.Code.MaxSourceBytes(), "dashboardEvents": map[string]string{"state": "disabled"}}
+	out := map[string]any{
+		"maxCodeSourceBytes": s.Catalog.Code.MaxSourceBytes(),
+		"dashboardEvents":    map[string]string{"state": "disabled"},
+		"tableEvents":        map[string]string{"state": "disabled"},
+	}
 	if s.Events != nil {
 		st := s.Events.Status()
 		out["dashboardEvents"] = map[string]string{"state": string(st.State), "detail": st.Detail}
+	}
+	if s.TableEvents != nil {
+		st := s.TableEvents.Status()
+		out["tableEvents"] = map[string]string{"state": string(st.State), "detail": st.Detail}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -512,6 +533,8 @@ func writeFailure(w http.ResponseWriter, err error, res resource) {
 		writeJSON(w, http.StatusNotFound, errorBody{Error: res.noun + " not found"})
 	case errors.Is(err, asset.ErrExists):
 		writeJSON(w, http.StatusConflict, errorBody{Error: res.conflict, Field: res.conflictField})
+	case errors.Is(err, asset.ErrManagedExternally):
+		writeJSON(w, http.StatusConflict, errorBody{Error: "this is an Iceberg table, managed by booth-lakehouse; it can't be edited or deleted here"})
 	case errors.Is(err, context.Canceled):
 		w.WriteHeader(499) // the client went away; nothing to tell anyone
 	default:

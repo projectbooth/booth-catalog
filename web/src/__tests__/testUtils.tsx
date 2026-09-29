@@ -66,6 +66,7 @@ export const dataset = (over: Record<string, unknown> = {}) => ({
   createdBy: "sub-alice",
   createdAt: "2026-09-01T12:00:00Z",
   updatedAt: "2026-09-19T12:00:00Z",
+  format: "file",
   ...over,
 });
 

@@ -38,6 +38,9 @@ func (s *Service) Create(ctx context.Context, workspace string, actor asset.Acto
 		Name: in.Name, Description: in.Description, Location: in.Location,
 		Schema: in.Schema, Tags: in.Tags, Owner: in.Owner,
 		CreatedBy: actor.Subject, CreatedAt: now, UpdatedAt: now,
+		// Every dataset this write path creates is a plain, manually-registered one (ADR 0085):
+		// an Iceberg table is only ever created by ApplyTable, from a table.* event.
+		Format: FormatFile,
 	}
 	if err := s.store.Create(ctx, d); err != nil {
 		return Dataset{}, err
@@ -48,6 +51,11 @@ func (s *Service) Create(ctx context.Context, workspace string, actor asset.Acto
 // Update replaces a dataset's mutable fields. An empty owner keeps the current one rather
 // than resetting it to the caller: an editor tidying a description must not silently take
 // ownership of someone else's dataset.
+//
+// A format: "iceberg" row refuses this (asset.ErrManagedExternally, ADR 0085): it exists only
+// because booth-lakehouse published a table.* event about it, and a manual edit here would
+// just be overwritten by that module's next event anyway — the same reason dashboards have no
+// write API at all.
 func (s *Service) Update(ctx context.Context, workspace, id string, in Input) (Dataset, error) {
 	in, err := in.Normalize()
 	if err != nil {
@@ -56,6 +64,9 @@ func (s *Service) Update(ctx context.Context, workspace, id string, in Input) (D
 	cur, err := s.store.Get(ctx, workspace, id)
 	if err != nil {
 		return Dataset{}, err
+	}
+	if cur.Format == FormatIceberg {
+		return Dataset{}, asset.ErrManagedExternally
 	}
 	if in.Owner == "" {
 		in.Owner = cur.Owner
@@ -73,8 +84,48 @@ func (s *Service) Get(ctx context.Context, workspace, id string) (Dataset, error
 	return s.store.Get(ctx, workspace, id)
 }
 
+// Delete removes a dataset. A format: "iceberg" row refuses this the same way Update does —
+// see its doc comment. It disappears from the catalog only via its own table.deleted event.
 func (s *Service) Delete(ctx context.Context, workspace, id string) error {
+	cur, err := s.store.Get(ctx, workspace, id)
+	if err != nil {
+		return err
+	}
+	if cur.Format == FormatIceberg {
+		return asset.ErrManagedExternally
+	}
 	return s.store.Delete(ctx, workspace, id)
+}
+
+// ApplyTable indexes an Iceberg table from a table.created/table.updated event (ADR 0085). It
+// reports whether the event changed anything: false means it was stale (older than an event
+// already applied), normal under at-least-once, out-of-order delivery and not an error.
+func (s *Service) ApplyTable(ctx context.Context, u TableUpsert) (bool, error) {
+	u, err := u.Normalize()
+	if err != nil {
+		return false, err
+	}
+	u.NewID, u.ReceivedAt = asset.NewID(), s.now()
+	return s.store.ApplyTable(ctx, u)
+}
+
+// RemoveTable tombstones an Iceberg table from a table.deleted event. at is the event's
+// publishedAt.
+func (s *Service) RemoveTable(ctx context.Context, workspace, sourceModule, tableUUID string, at time.Time) (bool, error) {
+	if !asset.ValidWorkspace(workspace) {
+		return false, asset.Invalid("workspace", "is not a valid workspace slug")
+	}
+	if !moduleRE.MatchString(sourceModule) {
+		return false, asset.Invalid("publishedBy", "must be a module ID such as \"lakehouse\"")
+	}
+	tableUUID, err := asset.Text("tableUuid", tableUUID, maxUUID, true, false)
+	if err != nil {
+		return false, err
+	}
+	if at.IsZero() {
+		return false, asset.Invalid("publishedAt", "is required")
+	}
+	return s.store.RemoveTable(ctx, workspace, sourceModule, tableUUID, at.UTC().Truncate(time.Microsecond))
 }
 
 // List filters tags through the same normalization registration uses, so a filter for

@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/projectbooth/booth-catalog/internal/dashboards"
+	"github.com/projectbooth/booth-catalog/internal/data"
 )
 
 // These tests run a real nats-server with JetStream in-process: what is being verified —
@@ -344,6 +345,84 @@ func TestDefaultRetryDelay(t *testing.T) {
 			t.Errorf("defaultRetryDelay(%d) = %s, want %s", delivered, got, d)
 		}
 	}
+}
+
+func publishTable(t *testing.T, js jetstream.JetStream, ws, eventType string, at time.Time, uuid, ns, name string) {
+	t.Helper()
+	d := any(tableData(uuid, ns, name, nil))
+	if eventType == EventTableDeleted {
+		d = map[string]any{"tableUuid": uuid}
+	}
+	publish(t, js, tableSubject(ws, eventType), envelope(ws, eventType, "lakehouse", at, d))
+}
+
+// The table.* subscription (ADR 0085) is a second, independent Subscriber over the same
+// stream: its own SubjectFilter and durable consumer, so it neither receives dashboard.*
+// events nor competes with that subscription's consumer for delivery position.
+func TestSubscriber_TableEventsEndToEndAndIsolatedFromDashboards(t *testing.T) {
+	url := startServer(t)
+	js := createStream(t, url)
+	dataSvc := data.NewService(data.NewMemoryStore())
+	dashSvc := newService()
+
+	names := func(ws string) []string {
+		page, _ := dataSvc.List(context.Background(), ws, data.ListFilter{})
+		out := make([]string, len(page.Items))
+		for i, d := range page.Items {
+			out[i] = d.Name
+		}
+		return out
+	}
+	run := func(cfg SubscriberConfig, proc Handler) *Subscriber {
+		cfg.URL, cfg.StreamPollInterval, cfg.ReconnectBase, cfg.ReconnectMax, cfg.Logf = url, 50*time.Millisecond, 50*time.Millisecond, 200*time.Millisecond, t.Logf
+		sub := NewSubscriber(cfg, proc)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { defer close(done); sub.Run(ctx) }()
+		t.Cleanup(func() {
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Error("Subscriber.Run did not return after its context was cancelled")
+			}
+		})
+		return sub
+	}
+
+	tableSub := run(SubscriberConfig{SubjectFilter: SubjectFilterTables, Consumer: DefaultConsumerNameTables}, NewTableProcessor(dataSvc))
+	dashSub := run(SubscriberConfig{}, NewProcessor(dashSvc)) // default SubjectFilter/Consumer: dashboard.*
+	eventually(t, "both subscriptions established", func() bool {
+		return tableSub.Status().State == StateSubscribed && dashSub.Status().State == StateSubscribed
+	})
+
+	publishTable(t, js, "acme", EventTableCreated, t0, "tbl-1", "sales", "orders")
+	publishDashboard(t, js, "acme", EventDashboardCreated, t0, "1", "Revenue")
+	eventually(t, "the table to be indexed as a dataset", func() bool { return contains(names("acme"), "sales.orders") })
+	eventually(t, "the dashboard to be indexed", func() bool {
+		page, _ := dashSvc.List(context.Background(), "acme", dashboards.ListFilter{})
+		return len(page.Items) == 1 && page.Items[0].Name == "Revenue"
+	})
+
+	// The table subscription's consumer was delivered exactly the one table event, never the
+	// dashboard one, and vice versa — confirming FilterSubject actually isolates them.
+	tableCons, err := js.Consumer(context.Background(), StreamName, DefaultConsumerNameTables)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := tableCons.Info(context.Background()); info.Delivered.Consumer != 1 {
+		t.Errorf("table consumer delivered %d messages, want exactly the 1 table event", info.Delivered.Consumer)
+	}
+	dashCons, err := js.Consumer(context.Background(), StreamName, DefaultConsumerName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := dashCons.Info(context.Background()); info.Delivered.Consumer != 1 {
+		t.Errorf("dashboard consumer delivered %d messages, want exactly the 1 dashboard event", info.Delivered.Consumer)
+	}
+
+	publishTable(t, js, "acme", EventTableDeleted, t0.Add(time.Minute), "tbl-1", "", "")
+	eventually(t, "the delete", func() bool { return len(names("acme")) == 0 })
 }
 
 func TestEnvelopeRoundTripsThroughTheWire(t *testing.T) {

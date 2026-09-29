@@ -23,10 +23,20 @@ const StreamName = "BOOTH_EVENTS"
 // reason for JetStream), and replicas pulling from one durable consumer share the work.
 const DefaultConsumerName = "booth-catalog-dashboards"
 
+// DefaultConsumerNameTables is DefaultConsumerName's twin for the table.* subscription
+// (ADR 0085) — a separate durable consumer, so the dashboard and table subscriptions each
+// track their own delivery position independently.
+const DefaultConsumerNameTables = "booth-catalog-tables"
+
 // SubscriberConfig configures a Subscriber. Only URL is required.
 type SubscriberConfig struct {
 	// URL is the NATS server, e.g. nats://booth-core-nats:4222.
 	URL string
+	// SubjectFilter is the JetStream consumer's subject filter. Defaults to SubjectFilter
+	// (dashboard.*); pass SubjectFilterTables to run a table.* subscription instead — the two
+	// run as separate Subscribers over the same connection details, each with its own
+	// Consumer name, so one event family's failures never touch the other's.
+	SubjectFilter string
 	// CredentialsFile is the path to the NATS ".creds" file booth-core provisions for this module
 	// (ADR 0050: Secret "booth-event-bus-credentials", key "nats.creds"). Empty connects without
 	// credentials, which only works against a bus with authentication switched off (local
@@ -64,6 +74,9 @@ type SubscriberConfig struct {
 }
 
 func (c *SubscriberConfig) applyDefaults() {
+	if c.SubjectFilter == "" {
+		c.SubjectFilter = SubjectFilter
+	}
 	if c.StreamName == "" {
 		c.StreamName = StreamName
 	}
@@ -125,16 +138,23 @@ type Status struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-// Subscriber is the JetStream transport: a durable pull consumer feeding a Processor.
+// Handler turns one received message into a change to a catalog and decides what should
+// happen to the message. *Processor (dashboard.*) and *TableProcessor (table.*, ADR 0085)
+// both implement it, so one Subscriber implementation serves either event family.
+type Handler interface {
+	Handle(ctx context.Context, subject string, payload []byte) Result
+}
+
+// Subscriber is the JetStream transport: a durable pull consumer feeding a Handler.
 type Subscriber struct {
 	cfg  SubscriberConfig
-	proc *Processor
+	proc Handler
 
 	mu     sync.RWMutex
 	status Status
 }
 
-func NewSubscriber(cfg SubscriberConfig, proc *Processor) *Subscriber {
+func NewSubscriber(cfg SubscriberConfig, proc Handler) *Subscriber {
 	cfg.applyDefaults()
 	return &Subscriber{cfg: cfg, proc: proc, status: Status{State: StateConnecting}}
 }
@@ -238,7 +258,7 @@ func (s *Subscriber) session(ctx context.Context) error {
 
 	consumer, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
 		Durable:       s.cfg.Consumer,
-		FilterSubject: SubjectFilter,
+		FilterSubject: s.cfg.SubjectFilter,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		AckWait:       s.cfg.AckWait,
 		MaxDeliver:    s.cfg.MaxDeliver,
@@ -272,7 +292,7 @@ func (s *Subscriber) session(ctx context.Context) error {
 	defer cc.Stop()
 
 	s.setStatus(StateSubscribed, "")
-	s.cfg.Logf("events: subscribed to %s on stream %s as durable consumer %q", SubjectFilter, s.cfg.StreamName, s.cfg.Consumer)
+	s.cfg.Logf("events: subscribed to %s on stream %s as durable consumer %q", s.cfg.SubjectFilter, s.cfg.StreamName, s.cfg.Consumer)
 
 	select {
 	case <-ctx.Done():

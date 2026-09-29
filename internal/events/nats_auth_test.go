@@ -17,6 +17,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/projectbooth/booth-catalog/internal/dashboards"
+	"github.com/projectbooth/booth-catalog/internal/data"
 )
 
 // These tests run the subscriber against a NATS server in JWT operator/account mode, the way
@@ -26,11 +27,15 @@ import (
 // smoke.7-dashboard-event), and the one the unauthenticated tests in nats_test.go can never
 // exercise — they would pass just as happily against a bus this module is locked out of.
 
-// moduleGrants mirrors what booth-core's internal/natsauth.GrantsFor derives from a manifest
-// declaring `events: {subscribe: ["dashboard.*"]}` — the subject allow-lists baked into the
-// credential core mints for this module. It is a COPY, so it can drift from core's: if core's
-// grants for a subscriber ever change, this must follow, and booth-e2e is the check that they
-// still agree in a real deployment.
+// moduleGrants mirrors what booth-core's internal/natsauth.GrantsFor derives from this module's
+// manifest, `events: {subscribe: ["dashboard.*", "table.*"]}` (ADR 0085 added the second
+// pattern) — the subject allow-lists baked into the credential core mints for this module. Core's
+// GrantsFor validates each declared pattern's grammar but, by its own documented limit, doesn't
+// embed any of them into a subject-scoped grant: the derived Grants are identical regardless of
+// which (non-empty) patterns are declared, so this one credential exercises both subscriptions
+// below. It is a COPY, so it can drift from core's: if core's grants for a subscriber ever
+// change, this must follow, and booth-e2e is the check that they still agree in a real
+// deployment.
 func moduleGrants() (publish, subscribe []string) {
 	const stream = StreamName
 	publish = []string{
@@ -219,6 +224,41 @@ func startCatalog(t *testing.T, url string, mutate func(*SubscriberConfig)) (*Su
 	return sub, svc, rec
 }
 
+// startTableCatalog is startCatalog's twin for the table.* subscription (ADR 0085).
+func startTableCatalog(t *testing.T, url string, mutate func(*SubscriberConfig)) (*Subscriber, *data.Service, *logRecorder) {
+	t.Helper()
+	svc := data.NewService(data.NewMemoryStore())
+	rec := &logRecorder{t: t}
+	cfg := SubscriberConfig{
+		URL: url, AckWait: 2 * time.Second, ReconnectBase: 50 * time.Millisecond, ReconnectMax: 200 * time.Millisecond,
+		StreamPollInterval: 50 * time.Millisecond, RetryDelay: func(int) time.Duration { return 20 * time.Millisecond }, Logf: rec.Logf,
+		SubjectFilter: SubjectFilterTables, Consumer: DefaultConsumerNameTables,
+	}
+	mutate(&cfg)
+	sub := NewSubscriber(cfg, NewTableProcessor(svc))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); sub.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("Subscriber.Run did not return after cancellation")
+		}
+	})
+	return sub, svc, rec
+}
+
+func indexedTables(svc *data.Service) []string {
+	page, _ := svc.List(context.Background(), "acme", data.ListFilter{})
+	out := make([]string, len(page.Items))
+	for i, d := range page.Items {
+		out[i] = d.Name
+	}
+	return out
+}
+
 func indexed(svc *dashboards.Service) []string {
 	page, _ := svc.List(context.Background(), "acme", dashboards.ListFilter{})
 	out := make([]string, len(page.Items))
@@ -242,10 +282,18 @@ func TestSubscriberWithModuleScopedCredentials(t *testing.T) {
 	publishDashboard(t, core, "acme", EventDashboardUpdated, t0.Add(time.Minute), "1", "Renamed")
 	eventually(t, "an update", func() bool { return contains(indexed(svc), "Renamed") })
 
+	// The same credential also has to carry the table.* subscription (ADR 0085): a second
+	// Subscriber, its own durable consumer, same account — proving moduleGrants() really does
+	// cover both, not just the one this test happened to exercise first.
+	tableSub, tableSvc, tableRec := startTableCatalog(t, bus.url, func(c *SubscriberConfig) { c.CredentialsFile = creds })
+	eventually(t, "the table subscription to be established under the same scoped credentials", func() bool { return tableSub.Status().State == StateSubscribed })
+	publish(t, core, tableSubject("acme", EventTableCreated), envelope("acme", EventTableCreated, "lakehouse", t0, tableData("tbl-1", "sales", "orders", nil)))
+	eventually(t, "a table event to arrive through the restricted consumer", func() bool { return contains(indexedTables(tableSvc), "sales.orders") })
+
 	// A permissions violation is what a grant that is too narrow looks like from here; the
 	// server reports it asynchronously and the operation just times out. Fail on the cause.
-	if log := rec.String(); strings.Contains(log, "permissions violation") {
-		t.Errorf("the subscriber hit a NATS permissions violation under the grants core derives:\n%s", log)
+	if log := rec.String() + tableRec.String(); strings.Contains(log, "permissions violation") {
+		t.Errorf("a subscriber hit a NATS permissions violation under the grants core derives:\n%s", log)
 	}
 }
 

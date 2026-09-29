@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -172,22 +173,25 @@ func TestChart_RequiresDatabaseSecret(t *testing.T) {
 // ADR 0050: a module that omits `events` gets no event-bus credential and cannot connect to the
 // bus at all. This is the field whose absence silently disabled the dashboard subscription
 // (booth-e2e's SKIPped smoke.7-dashboard-event), so it is pinned exactly: the catalog subscribes
-// to dashboard.* and — least privilege — publishes nothing.
+// to dashboard.* and table.* (ADR 0085) and — least privilege — publishes nothing.
 func TestManifest_DeclaresItsEventBusUsage(t *testing.T) {
 	m := renderBoothModule(t)
 	if m.Spec.Events == nil {
-		t.Fatal("spec.events is missing: without it booth-core mints no bus credential and the dashboard subscription cannot connect (ADR 0050)")
+		t.Fatal("spec.events is missing: without it booth-core mints no bus credential and the dashboard/table subscriptions cannot connect (ADR 0050)")
 	}
-	if len(m.Spec.Events.Subscribe) != 1 || m.Spec.Events.Subscribe[0] != "dashboard.*" {
-		t.Errorf("spec.events.subscribe = %v, want exactly [dashboard.*]", m.Spec.Events.Subscribe)
+	if want := []string{"dashboard.*", "table.*"}; !reflect.DeepEqual(m.Spec.Events.Subscribe, want) {
+		t.Errorf("spec.events.subscribe = %v, want exactly %v", m.Spec.Events.Subscribe, want)
 	}
 	if len(m.Spec.Events.Publish) != 0 {
 		t.Errorf("spec.events.publish = %v; the catalog publishes no events and must not ask to", m.Spec.Events.Publish)
 	}
 	// The pattern must satisfy core's own grammar (its CRD validation): dotted lowercase tokens, a
 	// literal first token, `*` only after it.
-	if !regexp.MustCompile(`^[a-z][a-z0-9]*(\.([a-z][a-z0-9]*|\*))+$`).MatchString(m.Spec.Events.Subscribe[0]) {
-		t.Errorf("%q would be rejected by booth-core's event-pattern validation", m.Spec.Events.Subscribe[0])
+	pat := regexp.MustCompile(`^[a-z][a-z0-9]*(\.([a-z][a-z0-9]*|\*))+$`)
+	for _, s := range m.Spec.Events.Subscribe {
+		if !pat.MatchString(s) {
+			t.Errorf("%q would be rejected by booth-core's event-pattern validation", s)
+		}
 	}
 }
 

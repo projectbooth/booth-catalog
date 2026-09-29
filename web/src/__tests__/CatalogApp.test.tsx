@@ -287,6 +287,45 @@ describe("dataset detail", () => {
     expect(await screen.findByText(/only workspace editors and owners/)).toBeInTheDocument();
     expect(window.location.pathname).toBe("/catalog/data/ds-1");
   });
+
+  // Iceberg tables (ADR 0085) are indexed from booth-lakehouse's events, never registered or
+  // edited by hand: the backend refuses a manual edit/delete, so the UI never offers one.
+  describe("Iceberg-format datasets (ADR 0085)", () => {
+    const icebergDs = dataset({
+      format: "iceberg",
+      table: { namespace: "sales", name: "orders", uuid: "tbl-1", currentSnapshotId: 42 },
+    });
+
+    it("marks an Iceberg table in the list and hides write controls on its detail page", async () => {
+      mockFetch({ [`GET ${CAT}/datasets`]: { json: page([icebergDs]) }, [`GET ${CAT}/tags`]: { json: { tags: [] } } });
+      renderApp("/catalog/data", "owner");
+      const row = (await screen.findByRole("link", { name: "orders" })).closest("td")!;
+      expect(within(row).getByText("Iceberg")).toBeInTheDocument();
+
+      cleanup();
+      mockFetch({
+        [`GET ${CAT}/datasets/ds-1`]: { json: icebergDs },
+        [`GET ${CAT}/datasets/ds-1/lineage`]: { json: { dashboards: [] } },
+      });
+      renderApp("/catalog/data/ds-1", "owner");
+      await screen.findByRole("heading", { name: "orders" });
+      expect(screen.getByText("Iceberg table")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+
+      expect(screen.getByText("sales")).toBeInTheDocument();
+      expect(screen.getByText("tbl-1")).toBeInTheDocument();
+      expect(screen.getByText("42")).toBeInTheDocument();
+    });
+
+    it("shows 'no snapshot yet' when a table has never been committed to", async () => {
+      const bare = dataset({ format: "iceberg", table: { namespace: "sales", name: "empty_table", uuid: "tbl-2" } });
+      mockFetch({ [`GET ${CAT}/datasets/ds-1`]: { json: bare }, [`GET ${CAT}/datasets/ds-1/lineage`]: { json: { dashboards: [] } } });
+      renderApp("/catalog/data/ds-1", "owner");
+      await screen.findByRole("heading", { name: "orders" });
+      expect(screen.getByText(/no snapshot yet/)).toBeInTheDocument();
+    });
+  });
 });
 
 describe("code", () => {

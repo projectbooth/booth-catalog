@@ -28,6 +28,16 @@ export interface Column {
   description?: string;
 }
 
+/** An Iceberg table's identity (ADR 0085), present only on a format: "iceberg" dataset —
+ *  set from booth-lakehouse's table.* events, never editable here. */
+export interface TableRef {
+  namespace: string;
+  name: string;
+  uuid: string;
+  /** Absent for a table with no snapshot yet (created but never committed to). */
+  currentSnapshotId?: number;
+}
+
 export interface Dataset {
   id: string;
   name: string;
@@ -39,6 +49,11 @@ export interface Dataset {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  /** "file" (the default, every hand-registered dataset) or "iceberg" (ADR 0085: indexed from
+   *  booth-lakehouse's table.* events, read-only here — see docs/decisions/0002). */
+  format: "file" | "iceberg";
+  /** Present only when format is "iceberg". */
+  table?: TableRef;
 }
 
 export interface DatasetInput {

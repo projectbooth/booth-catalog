@@ -30,9 +30,14 @@ spec:
   # per-subject permissions — from exactly this, and writes it to the Secret the Deployment
   # mounts. A module that omits `events` gets no credential and cannot connect to the bus at all,
   # which is how the dashboard subscription silently failed before this was declared.
+  #
+  # table.* (ADR 0085): booth-lakehouse's Iceberg table lifecycle, indexed as format: "iceberg"
+  # Datasets. Its own Subscriber/durable-consumer, but the same rule applies — omit it here and
+  # that subscription is denied at the bus, not just left unconfigured.
   events:
     subscribe:
       - dashboard.*
+      - table.*
   {{- end }}
   serviceRef:
     name: {{ include "booth-catalog.fullname" . }}

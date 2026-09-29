@@ -309,10 +309,14 @@ func TestDatasets_CreateReturnsTheNormalizedRecord(t *testing.T) {
 	e := newEnv(t, nil)
 	d := e.createDataset("editor", orders)
 
-	// The wire shape the UI and other modules depend on.
-	wantKeys := []string{"createdAt", "createdBy", "description", "id", "location", "name", "owner", "schema", "tags", "updatedAt"}
+	// The wire shape the UI and other modules depend on. "table" is omitted here (omitempty):
+	// it only appears on a format: "iceberg" row (ADR 0085), never on one registered by hand.
+	wantKeys := []string{"createdAt", "createdBy", "description", "format", "id", "location", "name", "owner", "schema", "tags", "updatedAt"}
 	if got := sortedKeys(d); !reflect.DeepEqual(got, wantKeys) {
 		t.Errorf("dataset keys = %v, want %v (no workspace leak)", got, wantKeys)
+	}
+	if d["format"] != "file" {
+		t.Errorf("format = %v, want %q for a dataset registered by hand", d["format"], "file")
 	}
 	if d["owner"] != "ed@example.com" || d["createdBy"] != "sub-ed" {
 		t.Errorf("owner/createdBy = %v/%v; owner defaults to the registering user's display name, createdBy is the token subject", d["owner"], d["createdBy"])

@@ -14,6 +14,7 @@ what Superset, Metabase and Streamlit publish). Brief:
 | Code catalog: publish and browse code with owner/description and **multiple, immutable, browsable versions** (ADR 0043); no execution or packaging | `internal/code`, `web/src/views/Code*.tsx` |
 | Cross-asset text search over names and descriptions (ADR 0044) | `internal/search`, `web/src/views/SearchView.tsx` |
 | Dashboard catalog: subscribes to `dashboard.*` events, indexes with owner and **lineage to source datasets**, native browsing UI in the View section (ADR 0018) | `internal/dashboards`, `internal/events`, `web/src/views/DashboardViews.tsx` |
+| Iceberg tables surface as `format: "iceberg"` datasets, subscribed from `booth-lakehouse`'s `table.*` events (ADR 0085) — read-only here, same as dashboards | `internal/data`, `internal/events/tables.go`, `web/src/views/Data*.tsx` |
 | Manifest + health check per contract | `charts/booth-catalog/templates/boothmodule.yaml`, `/healthz` |
 | CI per `contracts/testing-strategy.md` | `.github/workflows/` |
 
@@ -71,7 +72,10 @@ Reached through core's gateway at `/modules/catalog/api/...`. Every request need
 | `GET /healthz` · `GET /livez` | none | readiness (checks the database; what core polls) · liveness |
 
 There is **no write API for dashboards** at any role: they exist only because a dashboard module
-published an event.
+published an event. A `format: "iceberg"` dataset (ADR 0085) is the same story: `PUT`/`DELETE
+/api/datasets/{id}` refuse it with 409 (`asset.ErrManagedExternally`) — it exists only because
+`booth-lakehouse` published a `table.*` event, and a manual edit would just be overwritten by the
+next one. The read side (list, get, search, lineage) treats it exactly like any other dataset.
 
 **Roles are derived from the token's `groups` claim, never trusted from `X-Booth-Role`** — an
 over-claiming header is rejected with 403 (ADR 0041; verified against real Keycloak).
@@ -93,6 +97,18 @@ full-state upserts, three kinds of lineage source (`dataset`, `location`, `exter
 last-writer-wins by `publishedAt`, tombstoned deletes. `internal/events` and `internal/dashboards`
 implement it as ratified. `go run ./hack/publish-dashboard-event -h` sends one by hand.
 
+## The table event contract (ADR 0085)
+
+`table.created` / `updated` / `deleted` from `booth-lakehouse`: the table summary (`namespace`,
+`name`, `tableUuid`, `location`, `schema`, `currentSnapshotId`) minus its snapshot history, upserted
+or tombstoned into `internal/data` as a `format: "iceberg"` `Dataset` row named
+`<namespace>.<name>`. Same consumer semantics as the dashboard contract above — full-state upserts,
+last-writer-wins by `publishedAt`, tombstoned deletes — implemented as its own `Subscriber`/durable
+consumer/`Processor` (`internal/events/tables.go`) so a fault in one event family never touches the
+other. Identity is `(sourceModule, tableUuid)`, not name, so a rename is an update, not a new row;
+[docs/decisions/0007](docs/decisions/0007-iceberg-table-event-application.md) is the detailed
+reasoning, flagged for the coordinator the same way [0001](docs/decisions/0001-dashboard-event-payload.md) was.
+
 ## Event-bus access (ADR 0049 / 0050)
 
 `booth-core`'s bus authenticates every connection, and a module gets a credential only if its manifest
@@ -100,7 +116,7 @@ says what it needs. So the chart's `BoothModule` declares
 
 ```yaml
 events:
-  subscribe: ["dashboard.*"]      # and nothing to publish
+  subscribe: ["dashboard.*", "table.*"]      # and nothing to publish
 ```
 
 and `booth-core` answers by writing the Secret **`booth-event-bus-credentials`** (`nats.creds` + `url`) into

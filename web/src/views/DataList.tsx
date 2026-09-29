@@ -91,9 +91,12 @@ export function DataList({ v }: { v: ViewCtx }) {
                     {page.items.map((d) => (
                       <tr key={d.id}>
                         <td className="px-3 py-2 align-top">
-                          <Link className={`font-medium ${linkClass}`} href={v.href({ name: "data-detail", id: d.id })} onNavigate={v.goPath}>
-                            {d.name}
-                          </Link>
+                          <span className="flex flex-wrap items-center gap-1.5">
+                            <Link className={`font-medium ${linkClass}`} href={v.href({ name: "data-detail", id: d.id })} onNavigate={v.goPath}>
+                              {d.name}
+                            </Link>
+                            {d.format === "iceberg" && <Chip tone="indigo">Iceberg</Chip>}
+                          </span>
                           {d.description && <p className="mt-0.5 line-clamp-2 max-w-md text-xs text-slate-500 dark:text-slate-400">{d.description}</p>}
                         </td>
                         <td className="px-3 py-2 align-top font-mono text-xs text-slate-600 dark:text-slate-300">{formatLocation(d.location)}</td>

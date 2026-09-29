@@ -66,6 +66,10 @@ var (
 	// ErrExists means a uniqueness rule was violated (a name already taken in the workspace,
 	// a code version label already published).
 	ErrExists = errors.New("already exists")
+	// ErrManagedExternally means the asset is written only by the module that publishes events
+	// about it (ADR 0085's Iceberg tables, via booth-lakehouse's table.* events) — the same
+	// reason dashboards have no write API at all. The manual write path refuses to touch it.
+	ErrManagedExternally = errors.New("managed by the publishing module; not editable here")
 )
 
 // ValidationError is a request the caller can fix. Field names the offending JSON field
