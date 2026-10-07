@@ -80,20 +80,23 @@ jobs:
 
       - name: /healthz is 200 with the stream missing (migrations ran, Postgres reachable, NATS lag is only "degraded")
         run: |
-          # `kubectl run --rm -i` has an observed, unrelated-to-this-repo race: the command
-          # substitution sometimes returns empty even though the request succeeded server-side
-          # (the catalog's own access log shows a 200; $out is just empty). Retry only on that
-          # signal — empty output or kubectl/curl itself failing — never on real content: once
-          # $out is non-empty the content checks below run exactly once, unretried, so a
-          # genuinely wrong body still fails the step.
+          # `kubectl run --rm -i` has an observed, unrelated-to-this-repo race: when attach is
+          # slow to connect to a container as fast-finishing as `curl`, the container's real
+          # stdout can be missed entirely, and kubectl's OWN "All commands and output from this
+          # session will be recorded..." banner — which shares the same stdout stream — is all
+          # that ends up captured. A plain non-empty check doesn't catch this (the banner text
+          # is non-empty too); keep only a line that actually looks like our JSON response.
+          # Retry only on that signal; once a real response line is found, the content checks
+          # below run exactly once, unretried, so a genuinely wrong body still fails the step.
           out=""
           for attempt in 1 2 3; do
-            if out="$(kubectl -n booth-catalog run curl-early-$attempt --rm -i --restart=Never --image=curlimages/curl -- \
-              curl -sf http://booth-catalog.booth-catalog.svc.cluster.local:8080/healthz)" && [ -n "$out" ]; then
+            raw="$(kubectl -n booth-catalog run curl-early-$attempt --rm -i --restart=Never --image=curlimages/curl -- \
+              curl -sf http://booth-catalog.booth-catalog.svc.cluster.local:8080/healthz || true)"
+            out="$(printf '%s\n' "$raw" | grep '^{' || true)"
+            if [ -n "$out" ]; then
               break
             fi
-            echo "attempt $attempt: kubectl/curl returned no usable output, retrying…" >&2
-            out=""
+            echo "attempt $attempt: kubectl/curl returned no usable response (got: ${raw:-<nothing>}), retrying…" >&2
             sleep 2
           done
           echo "$out"
@@ -120,21 +123,23 @@ jobs:
 
       - name: Verify the API refuses unauthenticated requests in-cluster
         run: |
-          # `kubectl run --rm` appends its own "pod deleted" line, so match rather than compare.
-          # Same kubectl run --rm -i attach race as the /healthz step above: retry only on
-          # empty output or kubectl/curl itself failing, never on real content — once $status is
-          # non-empty the 401 check runs exactly once, unretried.
+          # Same kubectl run --rm -i attach race as the /healthz step above, and the same fix:
+          # a missed attach leaves kubectl's own banner text as the only captured output, so
+          # pull out just a line shaped like our actual `status=NNN` response rather than
+          # trusting "non-empty". Retry only when that's absent; once found, the 401 check runs
+          # exactly once, unretried, so a genuinely wrong status still fails the step.
           idx=0
           for path in /api/datasets /api/code /api/dashboards "/api/search?q=x"; do
             idx=$((idx + 1))
             status=""
             for attempt in 1 2 3; do
-              if status="$(kubectl -n booth-catalog run curl-authz-$idx-$attempt --rm -i --restart=Never --image=curlimages/curl -- \
-                curl -s -o /dev/null -w 'status=%{http_code}' "http://booth-catalog.booth-catalog.svc.cluster.local:8080$path")" && [ -n "$status" ]; then
+              raw="$(kubectl -n booth-catalog run curl-authz-$idx-$attempt --rm -i --restart=Never --image=curlimages/curl -- \
+                curl -s -o /dev/null -w 'status=%{http_code}' "http://booth-catalog.booth-catalog.svc.cluster.local:8080$path" || true)"
+              status="$(printf '%s\n' "$raw" | grep -o 'status=[0-9]\{3\}' | head -n1 || true)"
+              if [ -n "$status" ]; then
                 break
               fi
-              echo "attempt $attempt for $path: kubectl/curl returned no usable output, retrying…" >&2
-              status=""
+              echo "attempt $attempt for $path: kubectl/curl returned no usable response (got: ${raw:-<nothing>}), retrying…" >&2
               sleep 2
             done
             if [ -z "$status" ]; then
