@@ -80,9 +80,26 @@ jobs:
 
       - name: /healthz is 200 with the stream missing (migrations ran, Postgres reachable, NATS lag is only "degraded")
         run: |
-          out="$(kubectl -n booth-catalog run curl-early --rm -i --restart=Never --image=curlimages/curl -- \
-            curl -sf http://booth-catalog.booth-catalog.svc.cluster.local:8080/healthz)"
+          # `kubectl run --rm -i` has an observed, unrelated-to-this-repo race: the command
+          # substitution sometimes returns empty even though the request succeeded server-side
+          # (the catalog's own access log shows a 200; $out is just empty). Retry only on that
+          # signal — empty output or kubectl/curl itself failing — never on real content: once
+          # $out is non-empty the content checks below run exactly once, unretried, so a
+          # genuinely wrong body still fails the step.
+          out=""
+          for attempt in 1 2 3; do
+            if out="$(kubectl -n booth-catalog run curl-early-$attempt --rm -i --restart=Never --image=curlimages/curl -- \
+              curl -sf http://booth-catalog.booth-catalog.svc.cluster.local:8080/healthz)" && [ -n "$out" ]; then
+              break
+            fi
+            echo "attempt $attempt: kubectl/curl returned no usable output, retrying…" >&2
+            out=""
+            sleep 2
+          done
           echo "$out"
+          if [ -z "$out" ]; then
+            echo "no response after 3 attempts"; exit 1
+          fi
           echo "$out" | grep -q '"database":"ok"'
           echo "$out" | grep -q 'waiting-for-stream'
 
@@ -104,10 +121,27 @@ jobs:
       - name: Verify the API refuses unauthenticated requests in-cluster
         run: |
           # `kubectl run --rm` appends its own "pod deleted" line, so match rather than compare.
+          # Same kubectl run --rm -i attach race as the /healthz step above: retry only on
+          # empty output or kubectl/curl itself failing, never on real content — once $status is
+          # non-empty the 401 check runs exactly once, unretried.
+          idx=0
           for path in /api/datasets /api/code /api/dashboards "/api/search?q=x"; do
-            kubectl -n booth-catalog run curl-authz --rm -i --restart=Never --image=curlimages/curl -- \
-              curl -s -o /dev/null -w 'status=%{http_code}' "http://booth-catalog.booth-catalog.svc.cluster.local:8080$path" \
-              | grep -q 'status=401' || { echo "$path was not refused"; exit 1; }
+            idx=$((idx + 1))
+            status=""
+            for attempt in 1 2 3; do
+              if status="$(kubectl -n booth-catalog run curl-authz-$idx-$attempt --rm -i --restart=Never --image=curlimages/curl -- \
+                curl -s -o /dev/null -w 'status=%{http_code}' "http://booth-catalog.booth-catalog.svc.cluster.local:8080$path")" && [ -n "$status" ]; then
+                break
+              fi
+              echo "attempt $attempt for $path: kubectl/curl returned no usable output, retrying…" >&2
+              status=""
+              sleep 2
+            done
+            if [ -z "$status" ]; then
+              echo "$path: no response after 3 attempts"; exit 1
+            fi
+            echo "$path -> $status"
+            echo "$status" | grep -q 'status=401' || { echo "$path was not refused ($status)"; exit 1; }
           done
 
       - name: Verify the module has no Kubernetes API access
