@@ -34,7 +34,8 @@ func NewPostgresStore(ctx context.Context, pool *pgxpool.Pool) (*PostgresStore, 
 }
 
 const selectCols = `id, workspace, name, description, backend_id, path, columns, tags, owner, created_by, created_at, updated_at,
-	format, table_namespace, table_name, table_uuid, table_current_snapshot_id, source_module`
+	format, table_namespace, table_name, table_uuid, table_current_snapshot_id, source_module,
+	postgres_table_schema, postgres_table_name`
 
 // searchable is the text a query is matched against: name, description and the tags joined
 // into one string (so a query term matches inside any tag).
@@ -45,9 +46,11 @@ func scan(row pgx.Row) (Dataset, error) {
 	var format string
 	var tableNamespace, tableName, tableUUID string
 	var snapshotID *int64
+	var pgSchema, pgTableName string
 	if err := row.Scan(&d.ID, &d.Workspace, &d.Name, &d.Description, &d.Location.BackendID, &d.Location.Path,
 		&d.Schema, &d.Tags, &d.Owner, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt,
-		&format, &tableNamespace, &tableName, &tableUUID, &snapshotID, &d.SourceModule); err != nil {
+		&format, &tableNamespace, &tableName, &tableUUID, &snapshotID, &d.SourceModule,
+		&pgSchema, &pgTableName); err != nil {
 		return Dataset{}, err
 	}
 	if d.Schema == nil {
@@ -57,8 +60,11 @@ func scan(row pgx.Row) (Dataset, error) {
 		d.Tags = []string{}
 	}
 	d.Format = Format(format)
-	if d.Format == FormatIceberg {
+	switch d.Format {
+	case FormatIceberg:
 		d.Table = &TableRef{Namespace: tableNamespace, Name: tableName, UUID: tableUUID, CurrentSnapshotID: snapshotID}
+	case FormatPostgres:
+		d.PostgresTable = &PostgresTableRef{Schema: pgSchema, Name: pgTableName}
 	}
 	d.CreatedAt, d.UpdatedAt = d.CreatedAt.UTC(), d.UpdatedAt.UTC()
 	return d, nil
@@ -81,13 +87,25 @@ func nonNil(d Dataset) Dataset {
 	return d
 }
 
+// postgresTableCols reads d's postgresTable (if any) into the two column values Create/Update
+// write; both come back empty for a row that isn't format: "postgres".
+func postgresTableCols(d Dataset) (schema, name string) {
+	if d.PostgresTable != nil {
+		return d.PostgresTable.Schema, d.PostgresTable.Name
+	}
+	return "", ""
+}
+
 func (s *PostgresStore) Create(ctx context.Context, d Dataset) error {
 	d = nonNil(d)
+	pgSchema, pgTable := postgresTableCols(d)
 	_, err := s.pool.Exec(ctx, `INSERT INTO datasets
-		(id, workspace, name, description, backend_id, path, columns, tags, owner, created_by, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		(id, workspace, name, description, backend_id, path, columns, tags, owner, created_by, created_at, updated_at,
+		 format, postgres_table_schema, postgres_table_name)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
 		d.ID, d.Workspace, d.Name, d.Description, d.Location.BackendID, d.Location.Path,
-		d.Schema, d.Tags, d.Owner, d.CreatedBy, d.CreatedAt, d.UpdatedAt)
+		d.Schema, d.Tags, d.Owner, d.CreatedBy, d.CreatedAt, d.UpdatedAt,
+		string(d.Format), pgSchema, pgTable)
 	if isUniqueViolation(err) {
 		return asset.ErrExists
 	}
@@ -110,10 +128,13 @@ func (s *PostgresStore) Get(ctx context.Context, ws, id string) (Dataset, error)
 
 func (s *PostgresStore) Update(ctx context.Context, d Dataset) error {
 	d = nonNil(d)
+	pgSchema, pgTable := postgresTableCols(d)
 	tag, err := s.pool.Exec(ctx, `UPDATE datasets SET
-		name = $3, description = $4, backend_id = $5, path = $6, columns = $7, tags = $8, owner = $9, updated_at = $10
+		name = $3, description = $4, backend_id = $5, path = $6, columns = $7, tags = $8, owner = $9, updated_at = $10,
+		format = $11, postgres_table_schema = $12, postgres_table_name = $13
 		WHERE workspace = $1 AND id = $2 AND deleted_at IS NULL`,
-		d.Workspace, d.ID, d.Name, d.Description, d.Location.BackendID, d.Location.Path, d.Schema, d.Tags, d.Owner, d.UpdatedAt)
+		d.Workspace, d.ID, d.Name, d.Description, d.Location.BackendID, d.Location.Path, d.Schema, d.Tags, d.Owner, d.UpdatedAt,
+		string(d.Format), pgSchema, pgTable)
 	if isUniqueViolation(err) {
 		return asset.ErrExists
 	}

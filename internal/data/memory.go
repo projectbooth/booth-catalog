@@ -33,6 +33,10 @@ func clone(d Dataset) Dataset {
 		t := *d.Table
 		d.Table = &t
 	}
+	if d.PostgresTable != nil {
+		t := *d.PostgresTable
+		d.PostgresTable = &t
+	}
 	return d
 }
 
@@ -99,6 +103,7 @@ func (m *MemoryStore) Update(_ context.Context, d Dataset) error {
 	// Only the mutable fields change; identity and provenance are the store's to keep.
 	cur.Name, cur.Description, cur.Location = d.Name, d.Description, d.Location
 	cur.Schema, cur.Tags, cur.Owner, cur.UpdatedAt = d.Schema, d.Tags, d.Owner, d.UpdatedAt
+	cur.Format, cur.PostgresTable = d.Format, d.PostgresTable
 	m.byWS[d.Workspace][d.ID] = clone(cur)
 	return nil
 }

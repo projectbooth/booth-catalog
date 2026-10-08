@@ -41,6 +41,10 @@ export function DataDetail({ v, id }: { v: ViewCtx; id: string }) {
                   <>
                     Dataset <Chip tone="indigo">Iceberg</Chip>
                   </>
+                ) : d.format === "postgres" ? (
+                  <>
+                    Dataset <Chip tone="emerald">Postgres</Chip>
+                  </>
                 ) : (
                   "Dataset"
                 )
@@ -108,13 +112,25 @@ export function DataDetail({ v, id }: { v: ViewCtx; id: string }) {
               </Section>
             )}
 
-            <Section title="Storage location">
-              <p className="font-mono text-sm text-slate-800 dark:text-slate-200">{formatLocation(d.location)}</p>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Backend <code>{d.location.backendId}</code>, path <code>{d.location.path === "" ? "(the backend root)" : d.location.path}</code>. This is a reference, not a guarantee the data is there now.
-              </p>
-              <LocationCheck api={v.api} location={d.location} />
-            </Section>
+            {d.format === "postgres" && d.postgresTable ? (
+              <Section title="Postgres table">
+                <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                  <Meta label="Schema">{d.postgresTable.schema}</Meta>
+                  <Meta label="Table name">{d.postgresTable.name}</Meta>
+                </dl>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  In this workspace's own database. This is a reference — the catalog doesn't verify the table exists or read its data.
+                </p>
+              </Section>
+            ) : (
+              <Section title="Storage location">
+                <p className="font-mono text-sm text-slate-800 dark:text-slate-200">{formatLocation(d.location)}</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Backend <code>{d.location.backendId}</code>, path <code>{d.location.path === "" ? "(the backend root)" : d.location.path}</code>. This is a reference, not a guarantee the data is there now.
+                </p>
+                <LocationCheck api={v.api} location={d.location} />
+              </Section>
+            )}
 
             <Section title={`Schema (${d.schema.length} column${d.schema.length === 1 ? "" : "s"})`}>
               {d.schema.length === 0 ? (

@@ -375,6 +375,83 @@ func TestDatasets_ValidationAndConflictShapes(t *testing.T) {
 	}
 }
 
+// ADR 0102: a format: "postgres" dataset is registered by hand through this same write API
+// (editor/owner, ADR 0048) — no location, its own postgresTable block.
+func TestDatasets_PostgresFormat(t *testing.T) {
+	e := newEnv(t, nil)
+	body := map[string]any{"name": "pg_orders", "format": "postgres", "postgresTable": map[string]any{"schema": "public", "name": "orders"}}
+	d := e.createDataset("editor", body)
+
+	wantKeys := []string{"createdAt", "createdBy", "description", "format", "id", "location", "name", "owner", "postgresTable", "schema", "tags", "updatedAt"}
+	if got := sortedKeys(d); !reflect.DeepEqual(got, wantKeys) {
+		t.Errorf("dataset keys = %v, want %v", got, wantKeys)
+	}
+	if d["format"] != "postgres" {
+		t.Errorf("format = %v, want %q", d["format"], "postgres")
+	}
+	pt, _ := d["postgresTable"].(map[string]any)
+	if pt["schema"] != "public" || pt["name"] != "orders" {
+		t.Errorf("postgresTable = %v", pt)
+	}
+	loc, _ := d["location"].(map[string]any)
+	if loc["backendId"] != "" || loc["path"] != "" {
+		t.Errorf("location = %v, want the zero value for a postgres dataset", loc)
+	}
+
+	// Editing the table reference replaces it wholesale; switching to "file" clears it and
+	// requires a location.
+	id := str(d["id"])
+	renamed := e.want(e.as("owner", "PUT", "/api/datasets/"+id, map[string]any{
+		"name": "pg_orders", "format": "postgres", "postgresTable": map[string]any{"schema": "public", "name": "orders_v2"},
+	}), 200).obj()
+	pt2, _ := renamed["postgresTable"].(map[string]any)
+	if pt2["name"] != "orders_v2" {
+		t.Errorf("after rename: %v", pt2)
+	}
+
+	toFile := e.want(e.as("owner", "PUT", "/api/datasets/"+id, map[string]any{
+		"name": "pg_orders", "location": map[string]any{"backendId": "lake", "path": "warehouse/pg_orders"},
+	}), 200).obj()
+	if toFile["format"] != "file" {
+		t.Errorf("format after switching: %v", toFile["format"])
+	}
+	if _, has := toFile["postgresTable"]; has {
+		t.Errorf("postgresTable still present after switching to file: %v", toFile)
+	}
+}
+
+func TestDatasets_PostgresFormatValidation(t *testing.T) {
+	e := newEnv(t, nil)
+	cases := []struct {
+		name   string
+		body   map[string]any
+		status int
+		field  string
+	}{
+		{"missing postgresTable", map[string]any{"name": "x", "format": "postgres"}, 422, "postgresTable"},
+		{"postgresTable with a location", map[string]any{
+			"name": "x", "format": "postgres", "postgresTable": map[string]any{"schema": "public", "name": "x"},
+			"location": map[string]any{"backendId": "lake", "path": "a"},
+		}, 422, "location"},
+		{"bad identifier", map[string]any{"name": "x", "format": "postgres", "postgresTable": map[string]any{"schema": "public", "name": "my table"}}, 422, "postgresTable.name"},
+		{"postgresTable on a file dataset", map[string]any{
+			"name": "x", "location": map[string]any{"backendId": "lake", "path": "a"}, "postgresTable": map[string]any{"schema": "public", "name": "x"},
+		}, 422, "postgresTable"},
+		{"iceberg through the write API", map[string]any{"name": "x", "format": "iceberg"}, 422, "format"},
+		{"unknown format", map[string]any{"name": "x", "format": "parquet"}, 422, "format"},
+	}
+	for _, tc := range cases {
+		r := e.as("editor", "POST", "/api/datasets", tc.body)
+		if r.Code != tc.status {
+			t.Errorf("%s: status %d, want %d (%s)", tc.name, r.Code, tc.status, r.Body)
+			continue
+		}
+		if got := str(r.obj()["field"]); got != tc.field {
+			t.Errorf("%s: field = %q, want %q", tc.name, got, tc.field)
+		}
+	}
+}
+
 func TestDatasets_UpdateDeleteAndUnknownIDs(t *testing.T) {
 	e := newEnv(t, nil)
 	d := e.createDataset("editor", orders)
