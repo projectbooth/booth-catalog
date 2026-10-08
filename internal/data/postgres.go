@@ -88,7 +88,7 @@ func nonNil(d Dataset) Dataset {
 }
 
 // postgresTableCols reads d's postgresTable (if any) into the two column values Create/Update
-// write; both are '' for a row that isn't format: "postgres".
+// write; both come back empty for a row that isn't format: "postgres".
 func postgresTableCols(d Dataset) (schema, name string) {
 	if d.PostgresTable != nil {
 		return d.PostgresTable.Schema, d.PostgresTable.Name
