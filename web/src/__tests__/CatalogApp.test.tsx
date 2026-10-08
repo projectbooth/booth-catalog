@@ -173,6 +173,7 @@ describe("registering a dataset", () => {
     expect(post.body).toEqual({
       name: "orders",
       description: "One row per order",
+      format: "file",
       location: { backendId: "lake", path: "warehouse/orders" },
       schema: [{ name: "id", type: "bigint", description: "" }], // the blank row was dropped
       tags: ["Finance", "pii"], // the server lowercases and dedupes; the UI just splits and trims
@@ -324,6 +325,71 @@ describe("dataset detail", () => {
       renderApp("/catalog/data/ds-1", "owner");
       await screen.findByRole("heading", { name: "orders" });
       expect(screen.getByText(/no snapshot yet/)).toBeInTheDocument();
+    });
+  });
+
+  // ADR 0102: unlike Iceberg, a postgres-format dataset is manually managed — registered,
+  // edited and deleted through the same write API and controls as a file dataset.
+  describe("Postgres-format datasets (ADR 0102)", () => {
+    const pgDs = dataset({ format: "postgres", location: { backendId: "", path: "" }, postgresTable: { schema: "public", name: "orders" } });
+
+    it("marks a Postgres table in the list, shows its schema.name in place of a location, and keeps write controls on its detail page", async () => {
+      mockFetch({ [`GET ${CAT}/datasets`]: { json: page([pgDs]) }, [`GET ${CAT}/tags`]: { json: { tags: [] } } });
+      renderApp("/catalog/data", "owner");
+      const row = (await screen.findByRole("link", { name: "orders" })).closest("tr")!;
+      expect(within(row).getByText("Postgres")).toBeInTheDocument();
+      expect(within(row).getByText("public.orders")).toBeInTheDocument();
+
+      cleanup();
+      mockFetch({
+        [`GET ${CAT}/datasets/ds-1`]: { json: pgDs },
+        [`GET ${CAT}/datasets/ds-1/lineage`]: { json: { dashboards: [] } },
+      });
+      renderApp("/catalog/data/ds-1", "owner");
+      await screen.findByRole("heading", { name: "orders" });
+      expect(screen.getByText("Postgres table")).toBeInTheDocument();
+      expect(screen.getByText("public")).toBeInTheDocument();
+      expect(screen.queryByText(/Storage location/)).not.toBeInTheDocument();
+      // Unlike Iceberg, a postgres dataset is still manually editable.
+      expect(screen.getByRole("button", { name: "Edit" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    });
+
+    it("registers a postgres dataset with no storage location, through the format picker", async () => {
+      const m = mockFetch({
+        [`POST ${CAT}/datasets`]: { status: 201, json: dataset({ ...pgDs, id: "ds-new", name: "pg_orders" }) },
+        [`GET ${CAT}/datasets/ds-new`]: { json: dataset({ ...pgDs, id: "ds-new", name: "pg_orders" }) },
+        [`GET ${CAT}/datasets/ds-new/lineage`]: { json: { dashboards: [] } },
+      });
+      renderApp("/catalog/data/new");
+      const user = userEvent.setup();
+
+      await user.type(screen.getByLabelText(/^Name/), "pg_orders");
+      await user.selectOptions(screen.getByLabelText("Format"), "postgres");
+      // The location picker is gone once "postgres" is picked.
+      expect(screen.queryByLabelText(/^Backend/)).not.toBeInTheDocument();
+      await user.type(screen.getByLabelText(/^Schema/), "public");
+      await user.type(screen.getByLabelText(/^Table name/), "orders");
+      await user.click(screen.getByRole("button", { name: "Register dataset" }));
+
+      await screen.findByRole("heading", { name: "pg_orders" });
+      const post = m.called("POST", `${CAT}/datasets`)[0];
+      expect(post.body).toMatchObject({
+        format: "postgres",
+        location: { backendId: "", path: "" },
+        postgresTable: { schema: "public", name: "orders" },
+      });
+    });
+
+    it("switching the format picker back to file clears the postgres fields and asks for a location again", async () => {
+      mockFetch({ ...storageBackends });
+      renderApp("/catalog/data/new");
+      const user = userEvent.setup();
+      await user.selectOptions(screen.getByLabelText("Format"), "postgres");
+      await user.type(screen.getByLabelText(/^Schema/), "public");
+      await user.selectOptions(screen.getByLabelText("Format"), "file");
+      expect(screen.queryByLabelText(/^Schema/)).not.toBeInTheDocument();
+      expect(await screen.findByLabelText(/^Backend/)).toBeInTheDocument();
     });
   });
 });

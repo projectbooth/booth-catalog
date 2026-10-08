@@ -23,9 +23,24 @@ func sample(ws, name string) Dataset {
 		Schema:      []Column{{Name: "id", Type: "bigint", Description: "key"}, {Name: "amount", Type: "decimal(10,2)"}},
 		Tags:        []string{"finance", "pii"},
 		Owner:       "alice", CreatedBy: "sub-alice", CreatedAt: now, UpdatedAt: now,
-		// Every Store.Create caller is expected to pass this (Service.Create always does);
-		// the Postgres store's INSERT also leaves the column to this same DEFAULT regardless.
+		// Every Store.Create caller is expected to pass this (Service.Create always does).
 		Format: FormatFile,
+	}
+}
+
+// samplePostgres is sample's ADR 0102 twin: a format: "postgres" dataset, with no location.
+// Schema is explicitly []Column{} (never nil) for a clean round-trip comparison, matching
+// what Service.Create's own normalization always produces.
+func samplePostgres(ws, name string) Dataset {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	return Dataset{
+		ID: asset.NewID(), Workspace: ws, Name: name,
+		Description: "Description of " + name,
+		Schema:      []Column{},
+		Tags:        []string{"finance"},
+		Owner:       "alice", CreatedBy: "sub-alice", CreatedAt: now, UpdatedAt: now,
+		Format:        FormatPostgres,
+		PostgresTable: &PostgresTableRef{Schema: "public", Name: name},
 	}
 }
 
@@ -142,6 +157,56 @@ func runStoreTests(t *testing.T, newStore func(t *testing.T) Store) {
 		want.CreatedBy, want.CreatedAt = orig.CreatedBy, orig.CreatedAt
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("after update:\n got %+v\nwant %+v", got, want)
+		}
+	})
+
+	// ADR 0102: a format: "postgres" row round-trips with no location and its own
+	// postgresTable identity, and can switch format back and forth via Update like any other
+	// mutable field (unlike format: "iceberg", which the manual write API never touches).
+	t.Run("PostgresFormat", func(t *testing.T) {
+		s := newStore(t)
+		orig := mustCreate(t, s, samplePostgres("acme", "pg_orders"))
+
+		got, err := s.Get(ctx, "acme", orig.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, orig) {
+			t.Errorf("round trip mismatch:\n got %+v (table %+v)\nwant %+v (table %+v)", got, got.PostgresTable, orig, orig.PostgresTable)
+		}
+		if got.Location != (asset.Location{}) {
+			t.Errorf("Location = %+v, want the zero value", got.Location)
+		}
+
+		// Switch to format: "file": the stored postgresTable columns go back to empty, and
+		// Get stops reporting a PostgresTable at all.
+		toFile := orig
+		toFile.Format, toFile.PostgresTable = FormatFile, nil
+		toFile.Location = asset.Location{BackendID: "lake", Path: "warehouse/pg_orders"}
+		if err := s.Update(ctx, toFile); err != nil {
+			t.Fatal(err)
+		}
+		got2, err := s.Get(ctx, "acme", orig.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got2.Format != FormatFile || got2.PostgresTable != nil || got2.Location.BackendID != "lake" {
+			t.Errorf("after switching to file: %+v (table %+v)", got2, got2.PostgresTable)
+		}
+
+		// And back to postgres.
+		backToPg := got2
+		backToPg.Format, backToPg.PostgresTable = FormatPostgres, &PostgresTableRef{Schema: "public", Name: "pg_orders_v2"}
+		backToPg.Location = asset.Location{}
+		if err := s.Update(ctx, backToPg); err != nil {
+			t.Fatal(err)
+		}
+		got3, err := s.Get(ctx, "acme", orig.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got3.Format != FormatPostgres || got3.PostgresTable == nil || got3.PostgresTable.Name != "pg_orders_v2" || got3.Location != (asset.Location{}) {
+			t.Errorf("after switching back to postgres: %+v (table %+v)", got3, got3.PostgresTable)
 		}
 	})
 

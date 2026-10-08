@@ -15,6 +15,7 @@ what Superset, Metabase and Streamlit publish). Brief:
 | Cross-asset text search over names and descriptions (ADR 0044) | `internal/search`, `web/src/views/SearchView.tsx` |
 | Dashboard catalog: subscribes to `dashboard.*` events, indexes with owner and **lineage to source datasets**, native browsing UI in the View section (ADR 0018) | `internal/dashboards`, `internal/events`, `web/src/views/DashboardViews.tsx` |
 | Iceberg tables surface as `format: "iceberg"` datasets, subscribed from `booth-lakehouse`'s `table.*` events (ADR 0085) — read-only here, same as dashboards | `internal/data`, `internal/events/tables.go`, `web/src/views/Data*.tsx` |
+| Postgres tables surface as `format: "postgres"` datasets with `postgresTable: {schema, name}`, no location — registered by hand through the same write API as a file dataset (ADR 0102) | `internal/data`, `web/src/views/DatasetForm.tsx` |
 | Manifest + health check per contract | `charts/booth-catalog/templates/boothmodule.yaml`, `/healthz` |
 | CI per `contracts/testing-strategy.md` | `.github/workflows/` |
 

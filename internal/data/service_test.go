@@ -103,6 +103,67 @@ func TestService_UpdateErrors(t *testing.T) {
 	}
 }
 
+// ADR 0102: a format: "postgres" dataset is registered and edited through the same manual
+// write API as a "file" one — no event subscription, no ErrManagedExternally guard — and can
+// freely switch between the two formats, since both are manually managed.
+func TestService_PostgresFormatCreateAndUpdate(t *testing.T) {
+	svc := newSvc()
+	in := validPostgresInput()
+	d, err := svc.Create(ctx, "acme", alice, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Format != FormatPostgres || d.PostgresTable == nil || *d.PostgresTable != (PostgresTableRef{Schema: "public", Name: "orders"}) {
+		t.Fatalf("created = %+v (table %+v)", d, d.PostgresTable)
+	}
+	if d.Location != (asset.Location{}) {
+		t.Errorf("Location = %+v, want the zero value for a postgres dataset", d.Location)
+	}
+
+	got, err := svc.Get(ctx, "acme", d.ID)
+	if err != nil || got.Format != FormatPostgres || got.PostgresTable == nil || got.PostgresTable.Name != "orders" {
+		t.Errorf("Get after create = %+v, %v", got, err)
+	}
+
+	// A plain edit (e.g. renaming the real table) replaces the postgresTable wholesale.
+	in.PostgresTable = &PostgresTableRef{Schema: "public", Name: "orders_v2"}
+	upd, err := svc.Update(ctx, "acme", d.ID, in)
+	if err != nil || upd.PostgresTable == nil || upd.PostgresTable.Name != "orders_v2" {
+		t.Fatalf("after update: %+v, %v", upd, err)
+	}
+
+	// Switching to "file" clears the stale postgresTable and requires a location.
+	fileIn := validInput()
+	fileIn.Name = in.Name
+	switched, err := svc.Update(ctx, "acme", d.ID, fileIn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if switched.Format != FormatFile || switched.PostgresTable != nil || switched.Location == (asset.Location{}) {
+		t.Errorf("switched to file = %+v (table %+v)", switched, switched.PostgresTable)
+	}
+
+	// And back again.
+	switchedBack, err := svc.Update(ctx, "acme", d.ID, validPostgresInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if switchedBack.Format != FormatPostgres || switchedBack.Location != (asset.Location{}) {
+		t.Errorf("switched back to postgres = %+v", switchedBack)
+	}
+}
+
+// The manual write API must refuse an attempt to create a format: "iceberg" row directly —
+// that format is event-sourced only (TestService_ApplyTableIndexesAnIcebergDataset below).
+func TestService_CreateRefusesIceberg(t *testing.T) {
+	svc := newSvc()
+	in := validInput()
+	in.Format = FormatIceberg
+	if _, err := svc.Create(ctx, "acme", alice, in); fieldOf(t, err) != "format" {
+		t.Errorf("field = %v, want format", err)
+	}
+}
+
 func TestService_ListNormalizesTagFilters(t *testing.T) {
 	svc := newSvc()
 	in := validInput()

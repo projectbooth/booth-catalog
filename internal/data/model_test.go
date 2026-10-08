@@ -44,6 +44,7 @@ func TestNormalize_CanonicalForm(t *testing.T) {
 		Location:    asset.Location{BackendID: "lake", Path: "warehouse/orders"}, // trailing slash dropped
 		Schema:      []Column{{Name: "id", Type: "bigint", Description: "primary key"}},
 		Tags:        []string{"finance", "pii", "q3-2026", "team:data.eng"}, // lowercased, deduped, sorted
+		Format:      FormatFile,                                             // defaulted (ADR 0102): omitted input means "file"
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Normalize:\n got %+v\nwant %+v", got, want)
@@ -113,6 +114,102 @@ func TestNormalize_Rejects(t *testing.T) {
 				t.Errorf("field = %q, want %q (%v)", got, tc.field, err)
 			}
 		})
+	}
+}
+
+// ADR 0102: format defaults to "file" so every input that predates the field (or simply
+// never sends it) keeps registering a plain dataset exactly as before.
+func TestNormalize_FormatDefaultsToFile(t *testing.T) {
+	got, err := validInput().Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Format != FormatFile {
+		t.Errorf("Format = %q, want %q", got.Format, FormatFile)
+	}
+}
+
+func validPostgresInput() Input {
+	return Input{
+		Name:          "orders",
+		Format:        FormatPostgres,
+		PostgresTable: &PostgresTableRef{Schema: "public", Name: "orders"},
+	}
+}
+
+func TestNormalize_PostgresFormat(t *testing.T) {
+	got, err := Input{
+		Name:          "  orders  ",
+		Format:        FormatPostgres,
+		PostgresTable: &PostgresTableRef{Schema: " public ", Name: " orders "},
+	}.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Input{
+		Name: "orders", Format: FormatPostgres,
+		PostgresTable: &PostgresTableRef{Schema: "public", Name: "orders"},
+		Schema:        []Column{},
+		Tags:          []string{},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Normalize:\n got %+v (table %+v)\nwant %+v (table %+v)", got, got.PostgresTable, want, want.PostgresTable)
+	}
+	if got.Location != (asset.Location{}) {
+		t.Errorf("Location = %+v, want the zero value", got.Location)
+	}
+}
+
+func TestNormalize_PostgresFormatRejects(t *testing.T) {
+	cases := []struct {
+		name  string
+		mod   func(*Input)
+		field string
+	}{
+		{"missing postgresTable", func(i *Input) { i.PostgresTable = nil }, "postgresTable"},
+		{"missing schema", func(i *Input) { i.PostgresTable.Schema = "" }, "postgresTable.schema"},
+		{"missing table name", func(i *Input) { i.PostgresTable.Name = "" }, "postgresTable.name"},
+		{"schema with a space", func(i *Input) { i.PostgresTable.Schema = "my schema" }, "postgresTable.schema"},
+		{"schema starting with a digit", func(i *Input) { i.PostgresTable.Schema = "9public" }, "postgresTable.schema"},
+		{"table name with a dash", func(i *Input) { i.PostgresTable.Name = "my-table" }, "postgresTable.name"},
+		{"schema too long", func(i *Input) { i.PostgresTable.Schema = strings.Repeat("a", 64) }, "postgresTable.schema"},
+		{"a location is set", func(i *Input) { i.Location = asset.Location{BackendID: "lake", Path: "x"} }, "location"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := validPostgresInput()
+			tc.mod(&in)
+			_, err := in.Normalize()
+			if err == nil {
+				t.Fatal("Normalize accepted invalid input")
+			}
+			if got := fieldOf(t, err); got != tc.field {
+				t.Errorf("field = %q, want %q (%v)", got, tc.field, err)
+			}
+		})
+	}
+}
+
+// A format: "file" input (the default) must not carry a postgresTable — the manual API never
+// lets the two formats' fields leak into each other.
+func TestNormalize_FileFormatRejectsPostgresTable(t *testing.T) {
+	in := validInput()
+	in.PostgresTable = &PostgresTableRef{Schema: "public", Name: "orders"}
+	if _, err := in.Normalize(); fieldOf(t, err) != "postgresTable" {
+		t.Errorf("field = %v, want postgresTable", err)
+	}
+}
+
+func TestNormalize_UnknownFormatRejected(t *testing.T) {
+	in := validInput()
+	in.Format = "parquet"
+	if _, err := in.Normalize(); fieldOf(t, err) != "format" {
+		t.Errorf("field = %v, want format", err)
+	}
+	in2 := validInput()
+	in2.Format = FormatIceberg
+	if _, err := in2.Normalize(); fieldOf(t, err) != "format" {
+		t.Errorf("iceberg through the manual API: field = %v, want format", err)
 	}
 }
 

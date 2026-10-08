@@ -15,7 +15,8 @@ import (
 // can't silently drift apart.
 type Store interface {
 	// Create inserts d. It returns asset.ErrExists if the workspace already has a dataset
-	// with that name. d.Format is always FormatFile here: this is the manual write path.
+	// with that name. d.Format is FormatFile or FormatPostgres here (ADR 0102): this is the
+	// manual write path, and FormatIceberg is only ever created by ApplyTable.
 	Create(ctx context.Context, d Dataset) error
 	Get(ctx context.Context, workspace, id string) (Dataset, error)
 	// Update replaces d's mutable fields (everything but ID, Workspace, CreatedBy and

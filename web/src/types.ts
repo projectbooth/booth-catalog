@@ -38,6 +38,14 @@ export interface TableRef {
   currentSnapshotId?: number;
 }
 
+/** A Postgres table's identity (ADR 0102), present only on a format: "postgres" dataset —
+ *  the schema and table name of a real table in the workspace's own database. A different
+ *  shape from, and a different field from, TableRef — the two are never interchangeable. */
+export interface PostgresTableRef {
+  schema: string;
+  name: string;
+}
+
 export interface Dataset {
   id: string;
   name: string;
@@ -49,11 +57,16 @@ export interface Dataset {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
-  /** "file" (the default, every hand-registered dataset) or "iceberg" (ADR 0085: indexed from
-   *  booth-lakehouse's table.* events, read-only here — see docs/decisions/0002). */
-  format: "file" | "iceberg";
+  /** "file" (the default, every hand-registered dataset), "iceberg" (ADR 0085: indexed from
+   *  booth-lakehouse's table.* events, read-only here — see docs/decisions/0002), or
+   *  "postgres" (ADR 0102: a table in the workspace's own database, registered by hand like
+   *  "file"). A value this build doesn't recognize should be treated like any other
+   *  unsupported dataset — shown plainly, never an error. */
+  format: "file" | "iceberg" | "postgres";
   /** Present only when format is "iceberg". */
   table?: TableRef;
+  /** Present only when format is "postgres". */
+  postgresTable?: PostgresTableRef;
 }
 
 export interface DatasetInput {
@@ -64,6 +77,11 @@ export interface DatasetInput {
   tags: string[];
   /** Empty on create means "the registering user"; empty on update means "keep the current owner". */
   owner: string;
+  /** "file" (the default — omit this field entirely for the old behavior) or "postgres"
+   *  (ADR 0102). "iceberg" is refused: that format is event-sourced only. */
+  format?: "file" | "postgres";
+  /** Required when format is "postgres"; must be omitted otherwise. */
+  postgresTable?: PostgresTableRef;
 }
 
 export interface TagCount {

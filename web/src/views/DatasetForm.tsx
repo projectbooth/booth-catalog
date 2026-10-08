@@ -6,8 +6,11 @@ import type { ViewCtx } from "../context";
 import { errorMessage, useLoad } from "../hooks";
 import type { Column, Dataset, DatasetInput } from "../types";
 
-const EMPTY: DatasetInput = { name: "", description: "", location: { backendId: "", path: "" }, schema: [], tags: [], owner: "" };
+const EMPTY_LOCATION = { backendId: "", path: "" };
+const EMPTY: DatasetInput = { name: "", description: "", location: EMPTY_LOCATION, schema: [], tags: [], owner: "", format: "file" };
 
+// A format: "iceberg" row never reaches this form (DataDetail hides Edit for one, ADR 0085);
+// defaulting an unexpected value to "file" here is just defensive, not a real code path.
 const fromDataset = (d: Dataset): DatasetInput => ({
   name: d.name,
   description: d.description,
@@ -15,6 +18,8 @@ const fromDataset = (d: Dataset): DatasetInput => ({
   schema: d.schema.map((c) => ({ ...c })),
   tags: d.tags,
   owner: d.owner,
+  format: d.format === "postgres" ? "postgres" : "file",
+  postgresTable: d.postgresTable ? { ...d.postgresTable } : undefined,
 });
 
 /** Register a dataset, or edit one when `id` is given. */
@@ -38,10 +43,30 @@ function Editor({ v, id, initial }: { v: ViewCtx; id?: string; initial: DatasetI
 
   const set = <K extends keyof DatasetInput>(k: K, val: DatasetInput[K]) => setForm((f) => ({ ...f, [k]: val }));
   const fieldError = (name: string) => (error instanceof ApiError && error.field === name ? error.message : undefined);
-  // An error about a field with no control of its own here (or none named) is shown as a banner.
-  const ownField = ["name", "description", "owner", "tags", "location.backendId", "location.path"];
+  // An error about a field with no control of its own here (or none named) is shown as a
+  // banner. The bare "location"/"postgresTable" fields (a location set together with
+  // format: "postgres", or vice versa) have no dedicated control either: submit() below
+  // never constructs a body that could trigger them, so they're left to the banner too — a
+  // defense-in-depth server check surfacing here would mean something unexpected happened.
+  const ownField = ["name", "description", "owner", "tags", "format", "location.backendId", "location.path", "postgresTable.schema", "postgresTable.name"];
   const bannerError =
     error === null ? null : typeof error === "string" ? error : error.field && ownField.includes(error.field) ? null : error.message;
+
+  const isPostgres = form.format === "postgres";
+  const postgresTable = form.postgresTable ?? { schema: "", name: "" };
+  const setPostgresTable = (patch: Partial<typeof postgresTable>) => set("postgresTable", { ...postgresTable, ...patch });
+
+  // Switching format clears the other format's fields — ADR 0102's write API refuses a mix
+  // of the two (a location on a postgres row, a postgresTable on a file row), and clearing
+  // here means the switch always produces a request the server actually accepts.
+  function setFormat(next: "file" | "postgres") {
+    setForm((f) => ({
+      ...f,
+      format: next,
+      location: next === "postgres" ? EMPTY_LOCATION : f.location,
+      postgresTable: next === "postgres" ? (f.postgresTable ?? { schema: "", name: "" }) : undefined,
+    }));
+  }
 
   async function submit(ev: FormEvent) {
     ev.preventDefault();
@@ -50,7 +75,8 @@ function Editor({ v, id, initial }: { v: ViewCtx; id?: string; initial: DatasetI
     const body: DatasetInput = {
       ...form,
       name: form.name.trim(),
-      location: { backendId: form.location.backendId.trim(), path: form.location.path.trim() },
+      location: isPostgres ? EMPTY_LOCATION : { backendId: form.location.backendId.trim(), path: form.location.path.trim() },
+      postgresTable: isPostgres ? { schema: postgresTable.schema.trim(), name: postgresTable.name.trim() } : undefined,
       tags: tagText.split(",").map((t) => t.trim()).filter(Boolean),
       schema: form.schema.filter((c) => c.name.trim() !== "" || c.type.trim() !== ""),
     };
@@ -76,12 +102,40 @@ function Editor({ v, id, initial }: { v: ViewCtx; id?: string; initial: DatasetI
         {(p) => <textarea {...p} className={inputClass} rows={3} value={form.description} onChange={(e) => set("description", e.target.value)} />}
       </Field>
 
-      <LocationPicker
-        api={v.api}
-        value={form.location}
-        onChange={(l) => set("location", l)}
-        errors={{ backendId: fieldError("location.backendId"), path: fieldError("location.path") }}
-      />
+      <Field id="ds-format" label="Format" error={fieldError("format")} help="Where this dataset's data actually lives.">
+        {(p) => (
+          <select {...p} className={inputClass} value={form.format ?? "file"} onChange={(e) => setFormat(e.target.value as "file" | "postgres")}>
+            <option value="file">A file or folder in storage</option>
+            <option value="postgres">A table in this workspace's database</option>
+          </select>
+        )}
+      </Field>
+
+      {isPostgres ? (
+        <fieldset className="flex flex-col gap-3">
+          <legend className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-300">
+            Postgres table<span className="ml-0.5 text-red-500" aria-hidden="true">*</span>
+          </legend>
+          <p className="-mt-2 text-xs text-slate-500 dark:text-slate-400">
+            The catalog doesn't verify this table exists or read its data — it's a pointer, checked by whoever queries it.
+          </p>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field id="ds-pg-schema" label="Schema" required error={fieldError("postgresTable.schema")}>
+              {(p) => <input {...p} className={inputClass} placeholder="public" value={postgresTable.schema} onChange={(e) => setPostgresTable({ schema: e.target.value })} />}
+            </Field>
+            <Field id="ds-pg-table" label="Table name" required error={fieldError("postgresTable.name")}>
+              {(p) => <input {...p} className={inputClass} placeholder="orders" value={postgresTable.name} onChange={(e) => setPostgresTable({ name: e.target.value })} />}
+            </Field>
+          </div>
+        </fieldset>
+      ) : (
+        <LocationPicker
+          api={v.api}
+          value={form.location}
+          onChange={(l) => set("location", l)}
+          errors={{ backendId: fieldError("location.backendId"), path: fieldError("location.path") }}
+        />
+      )}
 
       <SchemaEditor columns={form.schema} onChange={(c) => set("schema", c)} />
 

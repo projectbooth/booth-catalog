@@ -96,10 +96,13 @@ export function DataList({ v }: { v: ViewCtx }) {
                               {d.name}
                             </Link>
                             {d.format === "iceberg" && <Chip tone="indigo">Iceberg</Chip>}
+                            {d.format === "postgres" && <Chip tone="emerald">Postgres</Chip>}
                           </span>
                           {d.description && <p className="mt-0.5 line-clamp-2 max-w-md text-xs text-slate-500 dark:text-slate-400">{d.description}</p>}
                         </td>
-                        <td className="px-3 py-2 align-top font-mono text-xs text-slate-600 dark:text-slate-300">{formatLocation(d.location)}</td>
+                        <td className="px-3 py-2 align-top font-mono text-xs text-slate-600 dark:text-slate-300">
+                          {d.format === "postgres" && d.postgresTable ? `${d.postgresTable.schema}.${d.postgresTable.name}` : formatLocation(d.location)}
+                        </td>
                         <td className="px-3 py-2 align-top">
                           <div className="flex flex-wrap gap-1">
                             {d.tags.map((t) => (

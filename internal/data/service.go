@@ -38,9 +38,10 @@ func (s *Service) Create(ctx context.Context, workspace string, actor asset.Acto
 		Name: in.Name, Description: in.Description, Location: in.Location,
 		Schema: in.Schema, Tags: in.Tags, Owner: in.Owner,
 		CreatedBy: actor.Subject, CreatedAt: now, UpdatedAt: now,
-		// Every dataset this write path creates is a plain, manually-registered one (ADR 0085):
-		// an Iceberg table is only ever created by ApplyTable, from a table.* event.
-		Format: FormatFile,
+		// in.Normalize already resolved this to FormatFile or FormatPostgres (ADR 0102) and
+		// refused anything else: an Iceberg table is only ever created by ApplyTable, from a
+		// table.* event, never through this write path.
+		Format: in.Format, PostgresTable: in.PostgresTable,
 	}
 	if err := s.store.Create(ctx, d); err != nil {
 		return Dataset{}, err
@@ -73,6 +74,11 @@ func (s *Service) Update(ctx context.Context, workspace, id string, in Input) (D
 	}
 	cur.Name, cur.Description, cur.Location = in.Name, in.Description, in.Location
 	cur.Schema, cur.Tags, cur.Owner = in.Schema, in.Tags, in.Owner
+	// Format is as mutable as anything else above (ADR 0102 lets a manually-managed dataset
+	// switch between "file" and "postgres"); PostgresTable moves with it, so switching away
+	// from "postgres" clears a stale table reference and switching to it requires a fresh one
+	// (in.Normalize already enforced that pairing).
+	cur.Format, cur.PostgresTable = in.Format, in.PostgresTable
 	cur.UpdatedAt = s.now()
 	if err := s.store.Update(ctx, cur); err != nil {
 		return Dataset{}, err
