@@ -82,6 +82,17 @@ next one. The read side (list, get, search, lineage) treats it exactly like any 
 over-claiming header is rejected with 403 (ADR 0041; verified against real Keycloak).
 `oidc.groupsClaim` must match booth-core's or every request is refused.
 
+**Key-fetch override (ADR 0108).** Set `oidc.jwksUrl` (env `BOOTH_OIDC_JWKS_URL`) to fetch signing
+keys directly from that URL instead of the issuer's own discovery document — `iss` is still
+validated exactly against `oidc.issuerUrl` either way. This is for a bundled install behind a
+self-signed-certificate Ingress: pointing `jwksUrl` at Keycloak's in-cluster Service over plain
+http means this pod never needs to trust that certificate just to verify tokens. Setting it
+without `oidc.issuerUrl` is a startup error. **Trust assumption:** the key fetch itself is
+in-cluster and unauthenticated (plain http, no auth), so it relies on NetworkPolicy and cluster
+trust to keep it from being reachable or spoofable from outside the cluster — nothing in this
+option enforces that itself. Unset (the default, and every external-provider install), behaviour
+is ordinary discovery, unchanged.
+
 **Workload tokens (ADR 0056).** Set `workloadIdentity.issuerUrl` (env `BOOTH_WORKLOAD_ISSUER_URL`) to
 booth-core's own issuer URL and the catalog also accepts the short-lived tokens core mints for
 unattended runs (e.g. a scheduled `booth-pipeline` run), verified against core's JWKS at
