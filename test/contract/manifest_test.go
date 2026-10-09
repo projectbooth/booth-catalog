@@ -293,3 +293,16 @@ func TestChart_PassesGroupsClaim(t *testing.T) {
 		t.Error("oidc.groupsClaim override not rendered")
 	}
 }
+
+// ADR 0108: the key-fetch override defaults to empty (today's discovery behaviour, unchanged)
+// and passes through when an operator sets it.
+func TestChart_PassesJWKSURL(t *testing.T) {
+	dep := helmTemplate(t, "templates/deployment.yaml")
+	if !regexp.MustCompile(`BOOTH_OIDC_JWKS_URL\s+value: ""`).Match(dep) {
+		t.Error("default oidc.jwksUrl should be empty (ordinary discovery)")
+	}
+	const jwksURL = "http://booth-core-keycloak.booth-system.svc.cluster.local:8080/realms/booth/protocol/openid-connect/certs"
+	if !bytes.Contains(helmTemplate(t, "templates/deployment.yaml", "--set", "oidc.jwksUrl="+jwksURL), []byte(`value: "`+jwksURL+`"`)) {
+		t.Error("oidc.jwksUrl override not rendered")
+	}
+}

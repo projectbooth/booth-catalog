@@ -67,6 +67,7 @@ func Load() (Config, error) {
 			ClientID:        os.Getenv("BOOTH_OIDC_CLIENT_ID"),
 			RequireAudience: os.Getenv("BOOTH_OIDC_REQUIRE_AUDIENCE") == "true",
 			GroupsClaim:     getEnv("BOOTH_OIDC_GROUPS_CLAIM", auth.DefaultGroupsClaim),
+			JWKSURL:         os.Getenv("BOOTH_OIDC_JWKS_URL"),
 		},
 	}
 
@@ -88,6 +89,13 @@ func Load() (Config, error) {
 	}
 	if cfg.OIDC.ClientID == "" {
 		return Config{}, fmt.Errorf("BOOTH_OIDC_CLIENT_ID is required")
+	}
+	// Redundant with the check above today (BOOTH_OIDC_ISSUER_URL is already unconditionally
+	// required here, unlike booth-core's dev-registry carve-out), but kept for parity with
+	// booth-core's config and because auth.NewVerifier is also a usable entry point on its
+	// own — this is the one error message that names the actual mistake either way.
+	if cfg.OIDC.JWKSURL != "" && cfg.OIDC.IssuerURL == "" {
+		return Config{}, fmt.Errorf("BOOTH_OIDC_JWKS_URL is set but BOOTH_OIDC_ISSUER_URL is empty: the issuer is still required to validate `iss`")
 	}
 	if !cfg.DevMemory && cfg.PostgresDSN == "" {
 		return Config{}, fmt.Errorf("BOOTH_POSTGRES_DSN is required (set BOOTH_CATALOG_DEV_MEMORY=true only for local development)")

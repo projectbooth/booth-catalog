@@ -10,7 +10,7 @@ func setEnv(t *testing.T, kv map[string]string) {
 	t.Helper()
 	for _, k := range []string{
 		"BOOTH_HTTP_ADDR", "BOOTH_POSTGRES_DSN", "BOOTH_NATS_URL", "BOOTH_NATS_CREDS_FILE", "BOOTH_CATALOG_MAX_CODE_BYTES", "BOOTH_CATALOG_DEV_MEMORY",
-		"BOOTH_OIDC_ISSUER_URL", "BOOTH_OIDC_CLIENT_ID", "BOOTH_OIDC_REQUIRE_AUDIENCE", "BOOTH_OIDC_GROUPS_CLAIM",
+		"BOOTH_OIDC_ISSUER_URL", "BOOTH_OIDC_CLIENT_ID", "BOOTH_OIDC_REQUIRE_AUDIENCE", "BOOTH_OIDC_GROUPS_CLAIM", "BOOTH_OIDC_JWKS_URL",
 		"BOOTH_WORKLOAD_ISSUER_URL",
 	} {
 		t.Setenv(k, "")
@@ -44,6 +44,10 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.HTTPAddr != ":8080" || cfg.MaxCodeSourceBytes != 1<<20 || cfg.NATSURL != "" || cfg.DevMemory || cfg.OIDC.RequireAudience || cfg.WorkloadIssuerURL != "" {
 		t.Errorf("defaults = %+v", cfg)
 	}
+	// Empty means today's behaviour exactly: ordinary discovery (ADR 0108).
+	if cfg.OIDC.JWKSURL != "" {
+		t.Errorf("JWKSURL = %q, want empty by default", cfg.OIDC.JWKSURL)
+	}
 	// The default must match booth-core's, or every request is refused (ADR 0041's fail-closed).
 	if cfg.OIDC.GroupsClaim != "groups" {
 		t.Errorf("GroupsClaim = %q, want booth-core's default", cfg.OIDC.GroupsClaim)
@@ -54,6 +58,7 @@ func TestLoad_Overrides(t *testing.T) {
 	setEnv(t, with(map[string]string{
 		"BOOTH_HTTP_ADDR": ":9090", "BOOTH_NATS_URL": "nats://n:4222", "BOOTH_CATALOG_MAX_CODE_BYTES": "4096",
 		"BOOTH_OIDC_REQUIRE_AUDIENCE": "true", "BOOTH_OIDC_GROUPS_CLAIM": "memberships",
+		"BOOTH_OIDC_JWKS_URL":       "http://keycloak.booth-system.svc.cluster.local:8080/realms/booth/protocol/openid-connect/certs",
 		"BOOTH_WORKLOAD_ISSUER_URL": "http://booth-core:8080",
 	}))
 	cfg, err := Load()
@@ -62,6 +67,20 @@ func TestLoad_Overrides(t *testing.T) {
 	}
 	if cfg.HTTPAddr != ":9090" || cfg.NATSURL != "nats://n:4222" || cfg.MaxCodeSourceBytes != 4096 || !cfg.OIDC.RequireAudience || cfg.OIDC.GroupsClaim != "memberships" || cfg.WorkloadIssuerURL != "http://booth-core:8080" {
 		t.Errorf("cfg = %+v", cfg)
+	}
+	if cfg.OIDC.JWKSURL != "http://keycloak.booth-system.svc.cluster.local:8080/realms/booth/protocol/openid-connect/certs" {
+		t.Errorf("JWKSURL = %q", cfg.OIDC.JWKSURL)
+	}
+}
+
+// ADR 0108 condition 2: setting jwksUrl without an issuer URL is a startup error.
+func TestLoad_RejectsJWKSURLWithoutIssuerURL(t *testing.T) {
+	setEnv(t, map[string]string{
+		"BOOTH_OIDC_CLIENT_ID": "c", "BOOTH_POSTGRES_DSN": "x",
+		"BOOTH_OIDC_JWKS_URL": "http://keycloak.booth-system.svc.cluster.local:8080/realms/booth/protocol/openid-connect/certs",
+	})
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "BOOTH_OIDC_ISSUER_URL") {
+		t.Errorf("err = %v, want it to name BOOTH_OIDC_ISSUER_URL", err)
 	}
 }
 
