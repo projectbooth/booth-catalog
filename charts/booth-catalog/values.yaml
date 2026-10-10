@@ -33,9 +33,14 @@ oidc:
 # Workload identity (ADR 0056): trust booth-core as a second token issuer, for the short-lived
 # tokens it mints for unattended runs (e.g. a scheduled booth-pipeline run registering catalog
 # output). These carry a `groups` claim shaped like a human's, so role derivation is unchanged.
-# Set to booth-core's own issuer URL — exactly its `workloadIdentity.issuerUrl` (empty there means
-# its in-cluster Service URL, e.g. http://booth-core.booth-system.svc:8080) — keys are read from
-# <url>/.well-known/jwks.json. Empty (the default) accepts only the OIDC provider's tokens above.
+# Set to booth-core's own issuer URL — exactly its `workloadIdentity.issuerUrl`, compared against
+# the token's `iss` character for character, so this has to match that value exactly, not a
+# guessed-at one. If core's chart left `workloadIdentity.issuerUrl` empty (its own default), read
+# the real in-cluster URL it computed from core's own Deployment's BOOTH_WORKLOAD_ISSUER_URL
+# environment variable (charts/booth-core/templates/deployment.yaml) rather than typing one here —
+# it depends on core's release name, namespace and service port, so there is no fixed default to
+# quote. Keys are read from <url>/.well-known/jwks.json. Empty (the default here) accepts only
+# the OIDC provider's tokens above.
 workloadIdentity:
   issuerUrl: ""
 
