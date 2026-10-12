@@ -97,22 +97,29 @@ jobs:
 
       - uses: azure/setup-helm@v4
 
-      - name: helm lint
+      - name: helm lint (no hand-set values beyond identity, ARCHITECTURE.md item 68)
+        working-directory: charts/booth-catalog
+        run: |
+          helm lint . \
+            --set oidc.issuerUrl=https://keycloak.example.com/realms/booth \
+            --set oidc.clientId=booth-catalog
+
+      - name: helm lint (own-database mode, no booth-core provisioning)
         working-directory: charts/booth-catalog
         run: |
           helm lint . \
             --set oidc.issuerUrl=https://keycloak.example.com/realms/booth \
             --set oidc.clientId=booth-catalog \
+            --set postgres.provisionedByCore=false \
             --set postgres.dsnSecret.name=booth-catalog-db
 
-      - name: helm template (render check)
+      - name: helm template (render check, no hand-set values beyond identity)
         working-directory: charts/booth-catalog
         run: |
           helm template booth-catalog . \
             --namespace booth-catalog \
             --set oidc.issuerUrl=https://keycloak.example.com/realms/booth \
-            --set oidc.clientId=booth-catalog \
-            --set postgres.dsnSecret.name=booth-catalog-db > /dev/null
+            --set oidc.clientId=booth-catalog > /dev/null
 
       - name: helm package + template (catches release.yml packaging regressions, ADR 0111)
         # release.yml's own chart job runs `helm package` then attaches/pushes the result --
@@ -125,8 +132,7 @@ jobs:
           helm template booth-catalog /tmp/dist/booth-catalog-0.0.0-ci.tgz \
             --namespace booth-catalog \
             --set oidc.issuerUrl=https://keycloak.example.com/realms/booth \
-            --set oidc.clientId=booth-catalog \
-            --set postgres.dsnSecret.name=booth-catalog-db > /dev/null
+            --set oidc.clientId=booth-catalog > /dev/null
 
   image-build:
     # Catches a broken Dockerfile on the PR that breaks it, not at release time. Not pushed.

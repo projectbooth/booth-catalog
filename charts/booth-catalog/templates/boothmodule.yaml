@@ -25,6 +25,13 @@ spec:
   requiredScopes:
     - catalog.read
     - catalog.write
+  {{- if .Values.postgres.provisionedByCore }}
+  # ADR 0053/0054: ask booth-core to provision this module's PostgreSQL database and role and
+  # deliver them as the Secret `booth-database-credentials`. Omitting the field means core
+  # provisions nothing, so it is only left out when the operator supplies their own database.
+  database:
+    enabled: true
+  {{- end }}
   {{- if .Values.eventBus.enabled }}
   # Event-bus usage (ADR 0050). booth-core derives this module's NATS credential — and its
   # per-subject permissions — from exactly this, and writes it to the Secret the Deployment

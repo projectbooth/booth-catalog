@@ -51,7 +51,7 @@ spec:
             - name: BOOTH_POSTGRES_DSN
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "postgres.dsnSecret.name is required: booth-catalog keeps its data in PostgreSQL (ADR 0014)" .Values.postgres.dsnSecret.name }}
+                  name: {{ include "booth-catalog.dsnSecretName" . }}
                   key: {{ .Values.postgres.dsnSecret.key }}
             {{- if .Values.eventBus.enabled }}
             {{- if .Values.eventBus.credentialsSecret.enabled }}
