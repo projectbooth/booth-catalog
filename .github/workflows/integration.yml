@@ -52,6 +52,11 @@ jobs:
       # internal/events' tests (a real nats-server in JWT operator mode, with core's derived
       # grants) and, deployed together with a real booth-core, by booth-e2e's
       # smoke.7-dashboard-event.
+      #
+      # No postgres.dsnSecret.name set: postgres.provisionedByCore defaults to true, so this
+      # installs with only the values booth-core's install API would actually supply
+      # (ARCHITECTURE.md item 68) and picks up the booth-database-credentials Secret the fixture
+      # above stands in for.
       - name: Install booth-catalog chart
         working-directory: charts/booth-catalog
         run: |
@@ -63,7 +68,6 @@ jobs:
             --set oidc.issuerUrl=https://accounts.google.com \
             --set oidc.clientId=booth-catalog-ci \
             --set oidc.requireAudience=false \
-            --set postgres.dsnSecret.name=booth-catalog-db \
             --set eventBus.credentialsSecret.enabled=false \
             --set nats.url=nats://nats:4222 \
             --wait --timeout 5m

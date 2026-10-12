@@ -45,10 +45,22 @@ workloadIdentity:
   issuerUrl: ""
 
 # The catalog's data lives in this module's own database on the shared PostgreSQL cluster
-# (ADR 0014). Reference an existing Secret holding the connection string; this chart does not
-# create the database or role.
+# (ADR 0014).
+#
+# By default booth-core provisions that database (ADR 0053/0054): the BoothModule manifest
+# declares `database: {enabled: true}`, and core creates a database and unprivileged role for
+# this module and delivers them as the Secret `booth-database-credentials` (key `dsn`) in this
+# release's namespace. There is nothing to create by hand. The pod may sit in
+# CreateContainerConfigError for a moment after install until core has written the Secret.
+#
+# To use your own database instead (no booth-core provisioning), set provisionedByCore to
+# false and name a Secret holding the connection string in dsnSecret. This chart never creates
+# the database, role or Secret itself.
 postgres:
+  provisionedByCore: true
   dsnSecret:
+    # Empty means "booth-database-credentials" when provisionedByCore is true; required
+    # (no default) when it is false.
     name: ""
     key: dsn
 

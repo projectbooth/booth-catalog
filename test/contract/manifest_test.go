@@ -39,6 +39,9 @@ type boothModule struct {
 			Publish   []string `yaml:"publish"`
 			Subscribe []string `yaml:"subscribe"`
 		} `yaml:"events"`
+		Database *struct {
+			Enabled bool `yaml:"enabled"`
+		} `yaml:"database"`
 		ServiceRef struct {
 			Name string `yaml:"name"`
 			Port int    `yaml:"port"`
@@ -46,10 +49,12 @@ type boothModule struct {
 	} `yaml:"spec"`
 }
 
+// The identity settings booth-core's install API supplies per ADR 0113's annotation mapping
+// are the only values a render needs by default: postgres.provisionedByCore defaults to true,
+// so no postgres.dsnSecret.name is required here (ADR 0053/0054, ARCHITECTURE.md item 68).
 var requiredValues = []string{
 	"--set", "oidc.issuerUrl=https://keycloak.example.com/realms/booth",
 	"--set", "oidc.clientId=booth-catalog",
-	"--set", "postgres.dsnSecret.name=booth-catalog-db",
 }
 
 func helm(t *testing.T, args ...string) ([]byte, error) {
@@ -160,15 +165,45 @@ func TestChart_HasNoKubernetesAPIAccess(t *testing.T) {
 	}
 }
 
-// TestChart_RequiresDatabaseSecret: rendering without a Postgres Secret must fail loudly
-// rather than produce a Deployment that crash-loops at boot.
-func TestChart_RequiresDatabaseSecret(t *testing.T) {
-	out, err := helm(t, "template", "x", chartDir(), "--set", "oidc.issuerUrl=https://kc/realms/booth", "--set", "oidc.clientId=booth-catalog")
+// TestManifest_DeclaresDatabase: by default booth-core provisions this module's database
+// (ADR 0053/0054), so the manifest must ask for one and the Deployment must read exactly the
+// Secret core delivers — otherwise the Module Store's Install button, which sends no values at
+// all, has nowhere to get a connection string from (ARCHITECTURE.md item 68).
+func TestManifest_DeclaresDatabase(t *testing.T) {
+	m := renderBoothModule(t)
+	if m.Spec.Database == nil || !m.Spec.Database.Enabled {
+		t.Fatalf("spec.database = %+v, want {enabled: true} (module-manifest.md, ADR 0053)", m.Spec.Database)
+	}
+
+	dep := helmTemplate(t, "templates/deployment.yaml")
+	if !regexp.MustCompile(`secretKeyRef:\s+name: booth-database-credentials\s+key: dsn`).Match(dep) {
+		t.Errorf("BOOTH_POSTGRES_DSN is not read from booth-database-credentials/dsn:\n%s", dep)
+	}
+}
+
+// TestChart_OwnDatabaseMode: an operator who brings their own database turns core's
+// provisioning off. Then the manifest must NOT ask for one, and the Secret has to be named —
+// rendering without it must fail loudly rather than produce a pod stuck waiting on a Secret
+// nobody is going to create.
+func TestChart_OwnDatabaseMode(t *testing.T) {
+	out, err := helm(t, append(append([]string{"template", "x", chartDir()}, requiredValues...), "--set", "postgres.provisionedByCore=false")...)
 	if err == nil {
-		t.Fatalf("chart rendered without postgres.dsnSecret.name:\n%s", out)
+		t.Fatalf("chart rendered with provisionedByCore=false and no Secret named:\n%s", out)
 	}
 	if !bytes.Contains(out, []byte("postgres.dsnSecret.name is required")) {
 		t.Errorf("failure message not actionable:\n%s", out)
+	}
+
+	own := helmTemplate(t, "", "--set", "postgres.provisionedByCore=false", "--set", "postgres.dsnSecret.name=my-db", "--set", "postgres.dsnSecret.key=url")
+	if !regexp.MustCompile(`secretKeyRef:\s+name: my-db\s+key: url`).Match(own) {
+		t.Errorf("own-database Secret not used:\n%s", own)
+	}
+	var m boothModule
+	if err := yaml.Unmarshal(helmTemplate(t, "templates/boothmodule.yaml", "--set", "postgres.provisionedByCore=false", "--set", "postgres.dsnSecret.name=my-db"), &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Spec.Database != nil {
+		t.Errorf("manifest still requests a core-provisioned database in own-database mode: %+v", m.Spec.Database)
 	}
 }
 

@@ -32,6 +32,14 @@ app.kubernetes.io/name: {{ include "booth-catalog.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
+{{- define "booth-catalog.dsnSecretName" -}}
+{{- if .Values.postgres.provisionedByCore -}}
+{{- default "booth-database-credentials" .Values.postgres.dsnSecret.name -}}
+{{- else -}}
+{{- required "postgres.dsnSecret.name is required when postgres.provisionedByCore=false: name the Secret holding your database connection string (ADR 0014)" .Values.postgres.dsnSecret.name -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "booth-catalog.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create -}}
 {{- default (include "booth-catalog.fullname" .) .Values.serviceAccount.name -}}
