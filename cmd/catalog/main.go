@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/projectbooth/booth-catalog/internal/api"
 	"github.com/projectbooth/booth-catalog/internal/app"
 	"github.com/projectbooth/booth-catalog/internal/auth"
@@ -21,6 +23,7 @@ import (
 	"github.com/projectbooth/booth-catalog/internal/dashboards"
 	"github.com/projectbooth/booth-catalog/internal/data"
 	"github.com/projectbooth/booth-catalog/internal/db"
+	"github.com/projectbooth/booth-catalog/internal/dbwait"
 	"github.com/projectbooth/booth-catalog/internal/events"
 )
 
@@ -108,7 +111,18 @@ func openStores(ctx context.Context, cfg config.Config) (app.Stores, func(), err
 		return app.Stores{Data: data.NewMemoryStore(), Code: code.NewMemoryStore(), Dashboards: dashboards.NewMemoryStore()}, func() {}, nil
 	}
 
-	pool, err := db.Open(ctx, cfg.PostgresDSN)
+	// ARCHITECTURE.md item 66 (c): a freshly-scheduled pod's first connection to PostgreSQL can
+	// be refused for a few seconds while the NetworkPolicy allow set catches up. Ride that out
+	// here, once, before migrations or anything else depends on this pool.
+	var pool *pgxpool.Pool
+	err := dbwait.Retry(ctx, "connecting to PostgreSQL", dbwait.DefaultMaxElapsed, func() error {
+		p, openErr := db.Open(ctx, cfg.PostgresDSN)
+		if openErr != nil {
+			return openErr
+		}
+		pool = p
+		return nil
+	})
 	if err != nil {
 		return app.Stores{}, nil, err
 	}
