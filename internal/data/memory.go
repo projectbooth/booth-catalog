@@ -296,14 +296,19 @@ func (m *MemoryStore) ApplyPostgresTable(_ context.Context, u PostgresTableUpser
 	m.ensureWorkspace(u.Workspace)
 	var d Dataset
 	if cur != nil {
-		d = *cur // merge: Name, Description, Tags, Owner and Source all stay as they are
+		d = *cur // merge: Name, Tags, Owner and Source all stay as they are
+		// Description follows Comment only for a row nobody hand-typed a description for —
+		// a hand-registered row's own text is never overwritten.
+		if d.Source != SourceManual {
+			d.Description = u.Comment
+		}
 	} else {
 		dname := postgresDatasetName(u.Schema, u.Name)
 		if m.nameTaken(u.Workspace, dname, "") {
 			return false, asset.ErrExists
 		}
 		d = Dataset{
-			ID: u.NewID, Workspace: u.Workspace, Name: dname,
+			ID: u.NewID, Workspace: u.Workspace, Name: dname, Description: u.Comment,
 			Tags: []string{}, CreatedAt: u.ReceivedAt,
 			Format: FormatPostgres, Source: SourceAuto,
 			PostgresTable: &PostgresTableRef{Schema: u.Schema, Name: u.Name},

@@ -5,11 +5,11 @@
 // and Consumer fields let several run side by side over one connection), its own durable
 // consumer, and its own failure domain.
 //
-// The payload shape below is provisional (ADR 0116 §1): booth-database's session had not yet
-// reported final field names when this was built, so this is built against
-// hack/publish-database-table-event's fixtures rather than a real publisher, and every field
-// not explicitly required is tolerated missing or of an unexpected shape rather than rejected
-// — see DatabaseTableData's doc comment for exactly what's assumed.
+// The payload shape matches ADR 0116's "Built as" section (booth-database PR #13): delivery is
+// at-least-once (a stable Nats-Msg-Id), so application here must be idempotent — the same
+// last-writer-wins-by-publishedAt identity match ApplyPostgresTable/RemovePostgresTable already
+// use for out-of-order redelivery handles at-least-once redelivery of the identical event for
+// free, since a redelivered event is never older than the one already applied.
 package events
 
 import (
@@ -44,24 +44,20 @@ type DatabaseTableCatalog interface {
 }
 
 // DatabaseTableData is the type-specific payload of database.table.created and
-// database.table.updated (ADR 0116): schema, name, kind, columns and an approximate row
-// count. database.table.deleted carries only Schema and Name.
-//
-// Provisional, per the ADR: booth-database hadn't reported final field names when this was
-// built. Assumptions made here, to revisit once it has:
-//   - Column's wire shape is {name, type, nullable, comment} — "comment" maps to data.Column's
-//     existing Description field (the same concept under booth-lakehouse's and a hand-typed
-//     schema's own naming), so no new JSON key is introduced for it.
-//   - schemaHash is read by booth-database for its own change detection and never needed here
-//     (last-writer-wins by publishedAt already orders events correctly) — it isn't a field
-//     below, which already means it's silently ignored like any other unknown field.
-//   - kind is treated as an opaque, non-empty string (data.TableKind), not validated against a
-//     closed enum: the ADR names "table", "view" and "materialized view" today, but a value
-//     this build doesn't recognize should still catalog and display rather than being dropped.
+// database.table.updated (ADR 0116, "Built as"): schema, name, kind ("table" | "view" |
+// "materialized_view" — partitioned tables are "table"; partitions and foreign tables are
+// never published at all), the table/view's own comment (nil when unset), its columns in
+// column order, an approximate row count (nil, always, for a view), and a schemaHash this
+// consumer never needs (last-writer-wins by publishedAt already orders events correctly; it
+// round-trips as an ordinary unknown field). database.table.deleted carries only Schema and
+// Name. kind is kept as an opaque, non-empty string (data.TableKind) rather than a closed Go
+// enum: harmless either way now that the real vocabulary is known, and it costs nothing to
+// stay lenient if booth-database ever adds a fourth kind.
 type DatabaseTableData struct {
 	Schema     string             `json:"schema"`
 	Name       string             `json:"name"`
 	Kind       string             `json:"kind"`
+	Comment    *string            `json:"comment"`
 	Columns    []databaseTableCol `json:"columns"`
 	ApproxRows *int64             `json:"approxRows"`
 }
@@ -73,6 +69,15 @@ type databaseTableCol struct {
 	Type     string `json:"type"`
 	Nullable bool   `json:"nullable"`
 	Comment  string `json:"comment"`
+}
+
+// comment reads d.Comment as a plain string: nil (no comment set on the real table) and ""
+// (an explicit empty comment, which Postgres also allows) are not worth distinguishing here.
+func (d DatabaseTableData) comment() string {
+	if d.Comment == nil {
+		return ""
+	}
+	return *d.Comment
 }
 
 func toColumns(cols []databaseTableCol) []data.Column {
@@ -145,7 +150,7 @@ func (p *DatabaseTableProcessor) Handle(ctx context.Context, subject string, pay
 	} else {
 		applied, err = p.catalog.ApplyPostgresTable(ctx, data.PostgresTableUpsert{
 			Workspace: workspace, SourceModule: env.PublishedBy,
-			Schema: d.Schema, Name: d.Name, Kind: data.TableKind(d.Kind),
+			Schema: d.Schema, Name: d.Name, Kind: data.TableKind(d.Kind), Comment: d.comment(),
 			Columns: toColumns(d.Columns), ApproxRows: d.ApproxRows,
 			At: env.PublishedAt,
 		})

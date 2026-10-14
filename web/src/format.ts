@@ -30,24 +30,19 @@ export function formatApproxRows(n: number | null | undefined): string {
   return `about ${n.toLocaleString()} row${n === 1 ? "" : "s"}`;
 }
 
-// ---- booth-database deep links (ADR 0116) -------------------------------------------------
+// ---- booth-database deep links (ADR 0116, "Built as" — booth-database PR #13) -------------
 //
-// Provisional: booth-database's session had not yet reported its real navPath or route shapes
-// when this was built (ADR 0116 §1/§3 — the row-preview and SQL-console endpoints are its own
-// build item, not this repo's). This assumes the fleet's one-word navPath convention
-// ("/database", matching contracts/module-manifest.md's navPath examples) and a plausible
-// nested route shape under it. Both are kept in exactly these two functions — nowhere else in
-// this package builds a booth-database path by hand — so correcting them once booth-database's
-// real routes are known is a one-place change.
+// Both routes are kept in exactly these two functions — nowhere else in this package builds a
+// booth-database path by hand — so a future route change is a one-place edit.
 
 const DATABASE_MODULE_NAV_PATH = "/database";
 
-/** The deep link for "Preview rows" on a format: "postgres" dataset. */
+/** The deep link for "Preview rows": the table page, which includes a 100-row preview. */
 export function previewRowsPath(table: { schema: string; name: string }): string {
-  return `${DATABASE_MODULE_NAV_PATH}/tables/${encodeURIComponent(table.schema)}/${encodeURIComponent(table.name)}/preview`;
+  return `${DATABASE_MODULE_NAV_PATH}/tables/${encodeURIComponent(table.schema)}/${encodeURIComponent(table.name)}`;
 }
 
-/** The deep link for "Open in SQL console" on a format: "postgres" dataset. */
+/** The deep link for "Open in SQL console": the console, prefilled for this table. */
 export function sqlConsolePath(table: { schema: string; name: string }): string {
-  return `${DATABASE_MODULE_NAV_PATH}/sql?schema=${encodeURIComponent(table.schema)}&table=${encodeURIComponent(table.name)}`;
+  return `${DATABASE_MODULE_NAV_PATH}/sql?schema=${encodeURIComponent(table.schema)}&name=${encodeURIComponent(table.name)}`;
 }

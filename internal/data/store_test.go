@@ -630,7 +630,8 @@ func runStoreTests(t *testing.T, newStore func(t *testing.T) Store) {
 		up := func(schema, name string, when int) PostgresTableUpsert {
 			return PostgresTableUpsert{
 				Workspace: "acme", SourceModule: "database", Schema: schema, Name: name,
-				Kind: TableKindTable, Columns: []Column{{Name: "id", Type: "bigint"}}, ApproxRows: &rows,
+				Kind: TableKindTable, Comment: "the real table's own comment",
+				Columns: []Column{{Name: "id", Type: "bigint"}}, ApproxRows: &rows,
 				At: at(when), NewID: asset.NewID(), ReceivedAt: at(1000 + when),
 			}
 		}
@@ -662,18 +663,23 @@ func runStoreTests(t *testing.T, newStore func(t *testing.T) Store) {
 			d.Kind != TableKindTable || d.ApproxRows == nil || *d.ApproxRows != 1696 || d.Missing {
 			t.Errorf("indexed dataset = %+v", d)
 		}
+		// An auto row's Description tracks the table's own comment — nothing hand-typed it.
+		if d.Description != "the real table's own comment" {
+			t.Errorf("Description = %q, want the comment (auto row, point 7 of docs/decisions/0009)", d.Description)
+		}
 		if got, err := s.Get(ctx, "acme", d.ID); err != nil || got.ID != d.ID {
 			t.Errorf("Get(%s) = %+v, %v", d.ID, got, err)
 		}
 
-		// Update: a later event for the same identity refreshes columns/kind/approxRows in place.
+		// Update: a later event for the same identity refreshes columns/kind/approxRows/comment
+		// in place, since it's still an auto row.
 		updated := up("nfl_data", "players", 1)
-		updated.Kind = TableKindView
+		updated.Kind, updated.Comment = TableKindView, "renamed comment"
 		if applied, err = s.ApplyPostgresTable(ctx, updated); err != nil || !applied {
 			t.Fatalf("update ApplyPostgresTable = %v, %v", applied, err)
 		}
 		got, err := s.Get(ctx, "acme", d.ID)
-		if err != nil || got.Kind != TableKindView {
+		if err != nil || got.Kind != TableKindView || got.Description != "renamed comment" {
 			t.Errorf("after update: %+v, %v", got, err)
 		}
 
