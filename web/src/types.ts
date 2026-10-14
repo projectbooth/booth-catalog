@@ -26,6 +26,9 @@ export interface Column {
   name: string;
   type: string;
   description?: string;
+  /** Only ever set on a format: "postgres" row's column (ADR 0116), from booth-database's
+   *  introspection. Absent/false for an Iceberg or hand-typed column. */
+  nullable?: boolean;
 }
 
 /** An Iceberg table's identity (ADR 0085), present only on a format: "iceberg" dataset —
@@ -67,6 +70,24 @@ export interface Dataset {
   table?: TableRef;
   /** Present only when format is "postgres". */
   postgresTable?: PostgresTableRef;
+  /** ADR 0116, meaningful only when format is "postgres": "manual" (registered by hand,
+   *  ADR 0102) or "auto" (booth-database's database.table.* events created it, with no
+   *  hand-registered row to merge into — read-only here except that an owner may delete it
+   *  once missing is true). Absent for a hand-registered row created before this field
+   *  existed is treated the same as "manual" by the UI below. */
+  source?: "manual" | "auto";
+  /** The real object's relation kind (ADR 0116), as booth-database's introspection reports
+   *  it — "table", "view" and "materialized view" are what it names today, but this build
+   *  displays any value rather than rejecting one it doesn't recognize yet. Present only
+   *  when format is "postgres". */
+  kind?: string;
+  /** Postgres's own planner estimate (ADR 0116) — never an exact count, never obtained by
+   *  reading the table. null/absent means unknown. Present only when format is "postgres". */
+  approxRows?: number | null;
+  /** True once a database.table.deleted event reports the real table gone (ADR 0116): the
+   *  row stays listed, with its search entry and lineage intact. Present only when format is
+   *  "postgres". */
+  missing?: boolean;
 }
 
 export interface DatasetInput {
@@ -220,7 +241,14 @@ export interface StorageEntry {
   isDir?: boolean;
 }
 
-// ---- booth-core (read-only; used by the owner picker) ------------------------
+// ---- booth-core (read-only; used by the owner picker and the Database deep links) --------
+
+/** One entry of GET /api/modules (contracts/core-platform-api.md): just enough to tell
+ *  whether a given module is installed, which is all the "Preview rows"/"Open in SQL
+ *  console" links below need from it. */
+export interface ModuleSummary {
+  id: string;
+}
 
 /** A directory entry (ADR 0047), scoped by the server to the caller's active workspace
  *  (ADR 0052). Omits the entry's own workspace list, matching what the server sends. */

@@ -28,6 +28,11 @@ const DefaultConsumerName = "booth-catalog-dashboards"
 // track their own delivery position independently.
 const DefaultConsumerNameTables = "booth-catalog-tables"
 
+// DefaultConsumerNameDatabaseTables is DefaultConsumerName's twin for the database.table.*
+// subscription (ADR 0116) — its own durable consumer, independent of both of the above: a
+// bug or backlog in any one event family never touches another's delivery position.
+const DefaultConsumerNameDatabaseTables = "booth-catalog-database-tables"
+
 // SubscriberConfig configures a Subscriber. Only URL is required.
 type SubscriberConfig struct {
 	// URL is the NATS server, e.g. nats://booth-core-nats:4222.

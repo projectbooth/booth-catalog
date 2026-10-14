@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { ApiError, datasetDashboards, deleteDataset, getDataset } from "../api/client";
+import { ApiError, datasetDashboards, deleteDataset, getDataset, listModules } from "../api/client";
 import { LocationCheck } from "../components/LocationPicker";
 import { Async, Banner, Button, Chip, Link, Meta, PageHeader, Section, linkClass } from "../components/ui";
 import type { ViewCtx } from "../context";
-import { formatDate, formatLocation, moduleLabel } from "../format";
+import { formatApproxRows, formatDate, formatLocation, moduleLabel, previewRowsPath, sqlConsolePath } from "../format";
 import { errorMessage, useLoad } from "../hooks";
 
 /** One dataset: its metadata, schema, where it lives (with a live check), and — the downstream half
@@ -12,6 +12,11 @@ export function DataDetail({ v, id }: { v: ViewCtx; id: string }) {
   const ds = useLoad(() => getDataset(v.api, id), [v.api.workspace, id]);
   // Lineage is secondary: it loads on its own so a slow or failing lineage lookup never hides the dataset.
   const readers = useLoad(() => datasetDashboards(v.api, id), [v.api.workspace, id]);
+  // Whether to offer the Database module's deep links: there's nothing to link to if it isn't
+  // installed. A failed or still-loading lookup degrades to "hide the links" rather than an
+  // error banner — the same degradation LocationCheck already has for booth-storage.
+  const modules = useLoad(() => listModules(v.api), [v.api.workspace]);
+  const databaseInstalled = modules.state.status === "ready" && modules.state.data.some((m) => m.id === "database");
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,50 +37,59 @@ export function DataDetail({ v, id }: { v: ViewCtx; id: string }) {
   return (
     <div className="flex flex-col gap-6">
       <Async state={ds.state}>
-        {(d) => (
-          <>
-            <PageHeader
-              title={d.name}
-              subtitle={
-                d.format === "iceberg" ? (
-                  <>
-                    Dataset <Chip tone="indigo">Iceberg</Chip>
-                  </>
-                ) : d.format === "postgres" ? (
-                  <>
-                    Dataset <Chip tone="emerald">Postgres</Chip>
-                  </>
-                ) : (
-                  "Dataset"
-                )
-              }
-              actions={
-                // An Iceberg table exists only because booth-lakehouse published an event about
-                // it (ADR 0085) — the backend refuses a manual edit or delete here, the same
-                // reason dashboards have no write controls at any role.
-                v.canWrite &&
-                d.format !== "iceberg" &&
-                (confirming ? (
-                  <>
-                    <span className="text-sm text-slate-600 dark:text-slate-300">Delete this catalog entry? The data in storage is not touched.</span>
-                    <Button variant="danger" disabled={busy} onClick={remove}>
-                      {busy ? "Deleting…" : "Confirm delete"}
-                    </Button>
-                    <Button disabled={busy} onClick={() => setConfirming(false)}>
-                      Cancel
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <Button onClick={() => v.go({ name: "data-edit", id })}>Edit</Button>
-                    <Button variant="danger" onClick={() => setConfirming(true)}>
-                      Delete
-                    </Button>
-                  </>
-                ))
-              }
-            />
-            {error && <Banner tone="error">{error}</Banner>}
+        {(d) => {
+          // A format: "postgres" auto row (ADR 0116) is read-only here, like an Iceberg row —
+          // except that once it's Missing, an owner (not just an editor) may remove it by hand.
+          const isAutoPostgres = d.format === "postgres" && d.source === "auto";
+          const canEdit = v.canWrite && d.format !== "iceberg" && !isAutoPostgres;
+          const canDelete = v.canWrite && d.format !== "iceberg" && (!isAutoPostgres || (!!d.missing && v.isOwner));
+          return (
+            <>
+              <PageHeader
+                title={d.name}
+                subtitle={
+                  <span className="flex flex-wrap items-center gap-1.5">
+                    Dataset
+                    {d.format === "iceberg" && <Chip tone="indigo">Iceberg</Chip>}
+                    {d.format === "postgres" && <Chip tone="emerald">Postgres</Chip>}
+                    {d.missing && <Chip tone="slate">Missing from the database</Chip>}
+                  </span>
+                }
+                actions={
+                  (canEdit || canDelete) &&
+                  (confirming ? (
+                    <>
+                      <span className="text-sm text-slate-600 dark:text-slate-300">
+                        {isAutoPostgres
+                          ? "Remove this entry? A matching table reappearing will bring it back."
+                          : "Delete this catalog entry? The data in storage is not touched."}
+                      </span>
+                      <Button variant="danger" disabled={busy} onClick={remove}>
+                        {busy ? "Deleting…" : "Confirm delete"}
+                      </Button>
+                      <Button disabled={busy} onClick={() => setConfirming(false)}>
+                        Cancel
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      {canEdit && <Button onClick={() => v.go({ name: "data-edit", id })}>Edit</Button>}
+                      {canDelete && (
+                        <Button variant="danger" onClick={() => setConfirming(true)}>
+                          Delete
+                        </Button>
+                      )}
+                    </>
+                  ))
+                }
+              />
+              {error && <Banner tone="error">{error}</Banner>}
+              {d.missing && (
+                <Banner tone="warn">
+                  Missing from the database: booth-database no longer sees this table. Lineage and search are unaffected, and a matching table reappearing
+                  clears this automatically.
+                </Banner>
+              )}
 
             {d.description && <p className="max-w-3xl whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-300">{d.description}</p>}
 
@@ -117,10 +131,22 @@ export function DataDetail({ v, id }: { v: ViewCtx; id: string }) {
                 <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                   <Meta label="Schema">{d.postgresTable.schema}</Meta>
                   <Meta label="Table name">{d.postgresTable.name}</Meta>
+                  {d.kind && <Meta label="Kind">{d.kind}</Meta>}
+                  {(d.approxRows !== undefined || d.source === "auto") && <Meta label="Rows">{formatApproxRows(d.approxRows)}</Meta>}
                 </dl>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
                   In this workspace's own database. This is a reference — the catalog doesn't verify the table exists or read its data.
                 </p>
+                {databaseInstalled && (
+                  <p className="flex flex-wrap gap-3 text-sm">
+                    <Link className={linkClass} href={previewRowsPath(d.postgresTable)} onNavigate={v.goPath}>
+                      Preview rows
+                    </Link>
+                    <Link className={linkClass} href={sqlConsolePath(d.postgresTable)} onNavigate={v.goPath}>
+                      Open in SQL console
+                    </Link>
+                  </p>
+                )}
               </Section>
             ) : (
               <Section title="Storage location">
@@ -142,6 +168,7 @@ export function DataDetail({ v, id }: { v: ViewCtx; id: string }) {
                       <tr>
                         <th className="px-3 py-2">Column</th>
                         <th className="px-3 py-2">Type</th>
+                        {d.format === "postgres" && <th className="px-3 py-2">Nullable</th>}
                         <th className="px-3 py-2">Description</th>
                       </tr>
                     </thead>
@@ -150,6 +177,7 @@ export function DataDetail({ v, id }: { v: ViewCtx; id: string }) {
                         <tr key={c.name}>
                           <td className="px-3 py-2 font-mono text-xs">{c.name}</td>
                           <td className="px-3 py-2 font-mono text-xs text-slate-600 dark:text-slate-300">{c.type}</td>
+                          {d.format === "postgres" && <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{c.nullable ? "yes" : "no"}</td>}
                           <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{c.description}</td>
                         </tr>
                       ))}
@@ -158,8 +186,9 @@ export function DataDetail({ v, id }: { v: ViewCtx; id: string }) {
                 </div>
               )}
             </Section>
-          </>
-        )}
+            </>
+          );
+        }}
       </Async>
 
       <Section title="Read by dashboards">

@@ -62,6 +62,7 @@ export function CatalogApp({ workspace, role, theme, getAccessToken, basePath = 
     () => ({
       api,
       canWrite: role === "owner" || role === "editor",
+      isOwner: role === "owner",
       href: (r) => routePath(r, basePath),
       go: (r) => onNavigate(routePath(r, basePath)),
       goPath: onNavigate,

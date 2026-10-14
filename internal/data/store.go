@@ -49,4 +49,22 @@ type Store interface {
 	// Get/List/Search/ContainingLocation) so a stale, late created/updated event can't
 	// resurrect it. Removing a table the catalog never saw still records the tombstone.
 	RemoveTable(ctx context.Context, workspace, sourceModule, tableUUID string, at time.Time) (applied bool, err error)
+
+	// ApplyPostgresTable upserts a format: "postgres" dataset from a database.table.created
+	// or database.table.updated event (ADR 0116), identified by (workspace, schema, name) —
+	// never a UUID, since a real Postgres table has none. If a matching row already exists —
+	// hand-registered (ADR 0102) or previously auto-created — it is merged: Columns, Kind and
+	// ApproxRows refresh and Missing clears, while Name, Description, Tags and Owner (and,
+	// for a hand-registered row, Source) are left exactly as they are. Otherwise a new row is
+	// created with Source=SourceAuto and no Description/Tags/Owner. Reports whether the event
+	// was applied (false: stale, older than one already applied to the same identity).
+	// asset.ErrExists means a freshly created row's computed name collides with an unrelated
+	// existing dataset — the caller (the events Processor) treats that as unfixable.
+	ApplyPostgresTable(ctx context.Context, u PostgresTableUpsert) (applied bool, err error)
+	// RemovePostgresTable marks a database.table.deleted event's row Missing=true — visible,
+	// with its search entry and lineage intact (ADR 0116 fork C), unlike RemoveTable's hidden
+	// tombstone above. A table the catalog never saw still gets a Missing=true placeholder row
+	// recorded, so a later out-of-order created/updated for the same identity still has
+	// something to merge into rather than silently creating a duplicate.
+	RemovePostgresTable(ctx context.Context, workspace, schema, name string, at time.Time) (applied bool, err error)
 }

@@ -55,6 +55,9 @@ type Deps struct {
 	// configured — the same gate as Events, since both run off the same NATS connection
 	// details).
 	TableEvents EventStatus
+	// DatabaseTableEvents is nil when the database.table.* subscription is disabled (ADR 0116;
+	// same gate as Events and TableEvents).
+	DatabaseTableEvents EventStatus
 }
 
 func NewRouter(deps Deps) http.Handler {
@@ -160,16 +163,26 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 			status = "degraded"
 		}
 	}
+	if s.DatabaseTableEvents == nil {
+		checks["databaseTableEventBus"] = "disabled"
+	} else {
+		st := s.DatabaseTableEvents.Status()
+		checks["databaseTableEventBus"] = string(st.State)
+		if st.State != events.StateSubscribed {
+			status = "degraded"
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": status, "checks": checks})
 }
 
-// handleConfig tells the UI the limits it should enforce up front, and whether dashboards and
-// Iceberg tables can currently be expected to be fresh.
+// handleConfig tells the UI the limits it should enforce up front, and whether dashboards,
+// Iceberg tables and database tables can currently be expected to be fresh.
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{
-		"maxCodeSourceBytes": s.Catalog.Code.MaxSourceBytes(),
-		"dashboardEvents":    map[string]string{"state": "disabled"},
-		"tableEvents":        map[string]string{"state": "disabled"},
+		"maxCodeSourceBytes":  s.Catalog.Code.MaxSourceBytes(),
+		"dashboardEvents":     map[string]string{"state": "disabled"},
+		"tableEvents":         map[string]string{"state": "disabled"},
+		"databaseTableEvents": map[string]string{"state": "disabled"},
 	}
 	if s.Events != nil {
 		st := s.Events.Status()
@@ -178,6 +191,10 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	if s.TableEvents != nil {
 		st := s.TableEvents.Status()
 		out["tableEvents"] = map[string]string{"state": string(st.State), "detail": st.Detail}
+	}
+	if s.DatabaseTableEvents != nil {
+		st := s.DatabaseTableEvents.Status()
+		out["databaseTableEvents"] = map[string]string{"state": string(st.State), "detail": st.Detail}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -266,7 +283,10 @@ func (s *server) handleUpdateDataset(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleDeleteDataset(w http.ResponseWriter, r *http.Request) {
 	id := identity(r)
 	dsID := chi.URLParam(r, "id")
-	if err := s.Catalog.Data.Delete(r.Context(), id.Workspace, dsID); err != nil {
+	// isOwner: ADR 0116 lets a workspace owner (not just an editor, though both pass this
+	// route's general editor-or-owner gate above) delete a missing auto-discovered Postgres
+	// row by hand. Service.Delete refuses every other write to such a row regardless.
+	if err := s.Catalog.Data.Delete(r.Context(), id.Workspace, dsID, id.Role == auth.RoleOwner); err != nil {
 		writeFailure(w, err, datasetResource)
 		return
 	}
@@ -534,7 +554,9 @@ func writeFailure(w http.ResponseWriter, err error, res resource) {
 	case errors.Is(err, asset.ErrExists):
 		writeJSON(w, http.StatusConflict, errorBody{Error: res.conflict, Field: res.conflictField})
 	case errors.Is(err, asset.ErrManagedExternally):
-		writeJSON(w, http.StatusConflict, errorBody{Error: "this is an Iceberg table, managed by booth-lakehouse; it can't be edited or deleted here"})
+		writeJSON(w, http.StatusConflict, errorBody{Error: "this row is managed by the module that publishes events about it; it can't be edited or deleted here"})
+	case errors.Is(err, asset.ErrForbidden):
+		writeJSON(w, http.StatusForbidden, errorBody{Error: err.Error()})
 	case errors.Is(err, context.Canceled):
 		w.WriteHeader(499) // the client went away; nothing to tell anyone
 	default:

@@ -33,6 +33,10 @@ const (
 	// maxPgIdent matches Postgres's own identifier length limit (NAMEDATALEN 64, so 63 usable
 	// bytes) — ADR 0102's postgresTable.schema/name.
 	maxPgIdent = 63
+	// maxKind bounds database.table.*'s kind field (ADR 0116) — "materialized view" is the
+	// longest of the three values the ADR names, with slack for a value this build doesn't
+	// recognize yet (unknown fields/values are tolerated, never guessed at or rejected outright).
+	maxKind = 50
 )
 
 // tagRE is the tag grammar: lowercase letters, digits and . _ : - (so "pii", "q3-2026" and
@@ -69,6 +73,31 @@ const (
 	FormatPostgres Format = "postgres"
 )
 
+// Source distinguishes a hand-registered format: "postgres" dataset (ADR 0102) from one
+// booth-database auto-discovered (ADR 0116). Meaningful only for FormatPostgres; every other
+// format leaves it empty. A manual write always produces SourceManual; ApplyPostgresTable sets
+// SourceManual on a row it merges into (preserving whatever it already was, since merging a
+// hand-registered row must not take over its editability) and SourceAuto only on a row it
+// creates from scratch.
+type Source string
+
+const (
+	SourceManual Source = "manual"
+	SourceAuto   Source = "auto"
+)
+
+// TableKind is a Postgres relation kind (ADR 0116), as booth-database's introspection reports
+// it: "table", "view" or "materialized view" today. A plain string, like Format above, so a
+// kind value this build doesn't recognize yet still round-trips and displays rather than
+// erroring — booth-database's exact vocabulary is still provisional.
+type TableKind string
+
+const (
+	TableKindTable            TableKind = "table"
+	TableKindView             TableKind = "view"
+	TableKindMaterializedView TableKind = "materialized view"
+)
+
 // TableRef is the Iceberg-specific identity a format: "iceberg" row carries (ADR 0085),
 // populated from booth-lakehouse's table.* events and never set by hand. Search (ADR 0044),
 // lineage (ADR 0046) and permissions (ADR 0048) don't look at it at all — to anyone browsing
@@ -103,6 +132,11 @@ type Column struct {
 	Name        string `json:"name"`
 	Type        string `json:"type"`
 	Description string `json:"description,omitempty"`
+	// Nullable is only ever set from a database.table.* event's column (ADR 0116; mapped from
+	// its "comment" field into Description above, and "nullable" into this). An Iceberg or
+	// hand-typed column never sets it, so it stays false/omitted for them exactly as before
+	// this field existed — no change to their JSON shape.
+	Nullable bool `json:"nullable,omitempty"`
 }
 
 // Dataset is a registered dataset (ADR 0042).
@@ -140,6 +174,27 @@ type Dataset struct {
 	// through this package's own write API — unlike Table above, it is as editable as any
 	// other mutable field (see Service.Update).
 	PostgresTable *PostgresTableRef `json:"postgresTable,omitempty"`
+
+	// Source, Kind, ApproxRows and Missing are ADR 0116's additions, meaningful only for
+	// FormatPostgres; every other format leaves them at their zero value.
+	//
+	// Source is SourceManual for a row registered by hand (ADR 0102) and SourceAuto for one
+	// booth-database's database.table.* events created with no hand-registered row to merge
+	// into. A SourceAuto row refuses this package's own write API (Service.Update/Delete)
+	// exactly as a FormatIceberg row does, with one exception: Service.Delete lets an owner
+	// remove it by hand once Missing is true.
+	Source Source `json:"source,omitempty"`
+	// Kind is the real object's relation kind ("table", "view", "materialized view"), as
+	// booth-database's introspection reports it — never guessed here.
+	Kind TableKind `json:"kind,omitempty"`
+	// ApproxRows is Postgres's own planner estimate, never an exact count and never obtained
+	// by querying the table (ADR 0102 item 4: the catalog never reads data). nil means unknown.
+	ApproxRows *int64 `json:"approxRows,omitempty"`
+	// Missing is true once a database.table.deleted event reports the real table gone (ADR
+	// 0116, fork C): the row, its search entry and its lineage all stay exactly as they are —
+	// unlike FormatIceberg's hidden tombstone, this is a visible, honest state the UI greys
+	// out. A later database.table.created/updated for the same identity clears it.
+	Missing bool `json:"missing,omitempty"`
 }
 
 // Input is what a caller supplies to register or update a dataset.
@@ -267,6 +322,7 @@ func normalizeSchema(in []Column) ([]Column, error) {
 		if col.Description, err = asset.Text(field+".description", c.Description, maxColumnDesc, false, false); err != nil {
 			return nil, err
 		}
+		col.Nullable = c.Nullable
 		if seen[col.Name] {
 			return nil, asset.Invalid(field+".name", "duplicate column name %q", col.Name)
 		}
@@ -358,6 +414,74 @@ func (u TableUpsert) Normalize() (TableUpsert, error) {
 // are each names within booth-lakehouse's own catalog, so joining them is what keeps two
 // tables in different namespaces from colliding here, the same way they don't collide there.
 func (u TableUpsert) datasetName() string { return u.Namespace + "." + u.Name }
+
+// PostgresTableUpsert is one parsed database.table.created / database.table.updated event
+// (ADR 0116): booth-database's introspected state for one table in a workspace's own
+// database. Identity is (workspace, schema, name) — never a UUID, unlike TableUpsert above:
+// a real Postgres table has none, so a rename is a new identity here, the same as if a person
+// renamed a hand-registered format: "postgres" row by hand.
+type PostgresTableUpsert struct {
+	Workspace    string
+	SourceModule string
+	Schema       string
+	Name         string
+	Kind         TableKind
+	Columns      []Column
+	// ApproxRows is nil when booth-database reports it unknown ("approxRows": null).
+	ApproxRows *int64
+	// At is the event's publishedAt: last-writer-wins, exactly like TableUpsert.At.
+	At time.Time
+
+	// NewID and ReceivedAt are filled in by the Service for the store's use when the event
+	// creates a row; ignored when it updates an existing one.
+	NewID      string
+	ReceivedAt time.Time
+}
+
+// Normalize validates the upsert and returns it in canonical form. Unlike Input.Normalize's
+// pgIdentRE check on a hand-typed postgresTable (ADR 0102), schema/name here are only
+// length-and-presence checked: booth-database reports the name of a table that really exists,
+// which can be quoted or mixed-case in ways a hand-typed identifier is deliberately not
+// trusted to be (see pgIdentRE's own doc comment) — rejecting those would make a real table
+// permanently uncatalogable.
+func (u PostgresTableUpsert) Normalize() (PostgresTableUpsert, error) {
+	out := u
+	var err error
+	if !asset.ValidWorkspace(u.Workspace) {
+		return PostgresTableUpsert{}, asset.Invalid("workspace", "is not a valid workspace slug")
+	}
+	if !moduleRE.MatchString(u.SourceModule) {
+		return PostgresTableUpsert{}, asset.Invalid("publishedBy", "must be a module ID such as \"database\"")
+	}
+	if out.Schema, err = asset.Text("schema", u.Schema, maxPgIdent, true, false); err != nil {
+		return PostgresTableUpsert{}, err
+	}
+	if out.Name, err = asset.Text("name", u.Name, maxTableName, true, false); err != nil {
+		return PostgresTableUpsert{}, err
+	}
+	kind, err := asset.Text("kind", string(u.Kind), maxKind, true, false)
+	if err != nil {
+		return PostgresTableUpsert{}, err
+	}
+	out.Kind = TableKind(kind)
+	if out.Columns, err = normalizeSchema(u.Columns); err != nil {
+		return PostgresTableUpsert{}, err
+	}
+	if u.ApproxRows != nil && *u.ApproxRows < 0 {
+		return PostgresTableUpsert{}, asset.Invalid("approxRows", "must not be negative")
+	}
+	if u.At.IsZero() {
+		return PostgresTableUpsert{}, asset.Invalid("publishedAt", "is required: it orders this event against others for the same table")
+	}
+	out.At = u.At.UTC().Truncate(time.Microsecond)
+	return out, nil
+}
+
+// postgresDatasetName is the catalog dataset name a freshly auto-discovered Postgres table
+// gets, mirroring TableUpsert.datasetName's schema.name convention. Only used when creating a
+// brand new row — merging into an existing (hand-registered or previously auto-created) one
+// never renames it (ApplyPostgresTable/RemovePostgresTable).
+func postgresDatasetName(schema, name string) string { return schema + "." + name }
 
 // ListFilter narrows a dataset listing. Every field is optional and they combine with AND.
 type ListFilter struct {

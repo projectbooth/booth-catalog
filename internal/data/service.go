@@ -43,6 +43,11 @@ func (s *Service) Create(ctx context.Context, workspace string, actor asset.Acto
 		// table.* event, never through this write path.
 		Format: in.Format, PostgresTable: in.PostgresTable,
 	}
+	if d.Format == FormatPostgres {
+		// Every format: "postgres" row this write API creates is hand-registered by
+		// definition (ADR 0116: an auto row only ever comes from ApplyPostgresTable).
+		d.Source = SourceManual
+	}
 	if err := s.store.Create(ctx, d); err != nil {
 		return Dataset{}, err
 	}
@@ -53,10 +58,10 @@ func (s *Service) Create(ctx context.Context, workspace string, actor asset.Acto
 // than resetting it to the caller: an editor tidying a description must not silently take
 // ownership of someone else's dataset.
 //
-// A format: "iceberg" row refuses this (asset.ErrManagedExternally, ADR 0085): it exists only
-// because booth-lakehouse published a table.* event about it, and a manual edit here would
-// just be overwritten by that module's next event anyway — the same reason dashboards have no
-// write API at all.
+// A format: "iceberg" row, or a format: "postgres" row with Source == SourceAuto, refuses this
+// (asset.ErrManagedExternally, ADR 0085/0116): it exists only because another module published
+// an event about it, and a manual edit here would just be overwritten by that module's next
+// event anyway — the same reason dashboards have no write API at all.
 func (s *Service) Update(ctx context.Context, workspace, id string, in Input) (Dataset, error) {
 	in, err := in.Normalize()
 	if err != nil {
@@ -66,7 +71,7 @@ func (s *Service) Update(ctx context.Context, workspace, id string, in Input) (D
 	if err != nil {
 		return Dataset{}, err
 	}
-	if cur.Format == FormatIceberg {
+	if cur.Format == FormatIceberg || cur.Source == SourceAuto {
 		return Dataset{}, asset.ErrManagedExternally
 	}
 	if in.Owner == "" {
@@ -77,8 +82,14 @@ func (s *Service) Update(ctx context.Context, workspace, id string, in Input) (D
 	// Format is as mutable as anything else above (ADR 0102 lets a manually-managed dataset
 	// switch between "file" and "postgres"); PostgresTable moves with it, so switching away
 	// from "postgres" clears a stale table reference and switching to it requires a fresh one
-	// (in.Normalize already enforced that pairing).
+	// (in.Normalize already enforced that pairing). Source follows Format: a row this write API
+	// touches is hand-registered by definition, whichever format it ends up as.
 	cur.Format, cur.PostgresTable = in.Format, in.PostgresTable
+	if cur.Format == FormatPostgres {
+		cur.Source = SourceManual
+	} else {
+		cur.Source = ""
+	}
 	cur.UpdatedAt = s.now()
 	if err := s.store.Update(ctx, cur); err != nil {
 		return Dataset{}, err
@@ -90,9 +101,15 @@ func (s *Service) Get(ctx context.Context, workspace, id string) (Dataset, error
 	return s.store.Get(ctx, workspace, id)
 }
 
-// Delete removes a dataset. A format: "iceberg" row refuses this the same way Update does —
-// see its doc comment. It disappears from the catalog only via its own table.deleted event.
-func (s *Service) Delete(ctx context.Context, workspace, id string) error {
+// Delete removes a dataset. A format: "iceberg" row refuses this the same way Update does — it
+// disappears from the catalog only via its own table.deleted event.
+//
+// A format: "postgres" auto row (ADR 0116) is almost the same: refused outright while the real
+// table still exists (Missing is false), since the next database.table.updated would just
+// recreate what was deleted. The one exception the ADR carves out is a Missing auto row — the
+// real table is already gone, so there is nothing left for an event to resurrect against —
+// which isOwner (the caller's workspace role is owner, not just editor) may remove by hand.
+func (s *Service) Delete(ctx context.Context, workspace, id string, isOwner bool) error {
 	cur, err := s.store.Get(ctx, workspace, id)
 	if err != nil {
 		return err
@@ -100,7 +117,49 @@ func (s *Service) Delete(ctx context.Context, workspace, id string) error {
 	if cur.Format == FormatIceberg {
 		return asset.ErrManagedExternally
 	}
+	if cur.Source == SourceAuto {
+		if !cur.Missing {
+			return asset.ErrManagedExternally
+		}
+		if !isOwner {
+			return asset.ErrForbidden
+		}
+	}
 	return s.store.Delete(ctx, workspace, id)
+}
+
+// ApplyPostgresTable indexes a format: "postgres" dataset from a database.table.created or
+// database.table.updated event (ADR 0116). It reports whether the event changed anything:
+// false means it was stale (older than an event already applied), normal under at-least-once,
+// out-of-order delivery and not an error.
+func (s *Service) ApplyPostgresTable(ctx context.Context, u PostgresTableUpsert) (bool, error) {
+	u, err := u.Normalize()
+	if err != nil {
+		return false, err
+	}
+	u.NewID, u.ReceivedAt = asset.NewID(), s.now()
+	return s.store.ApplyPostgresTable(ctx, u)
+}
+
+// RemovePostgresTable marks a format: "postgres" dataset Missing from a database.table.deleted
+// event. at is the event's publishedAt. Unlike RemoveTable, the row stays fully visible — see
+// Store.RemovePostgresTable's doc comment.
+func (s *Service) RemovePostgresTable(ctx context.Context, workspace, schema, name string, at time.Time) (bool, error) {
+	if !asset.ValidWorkspace(workspace) {
+		return false, asset.Invalid("workspace", "is not a valid workspace slug")
+	}
+	schema, err := asset.Text("schema", schema, maxPgIdent, true, false)
+	if err != nil {
+		return false, err
+	}
+	name, err = asset.Text("name", name, maxTableName, true, false)
+	if err != nil {
+		return false, err
+	}
+	if at.IsZero() {
+		return false, asset.Invalid("publishedAt", "is required")
+	}
+	return s.store.RemovePostgresTable(ctx, workspace, schema, name, at.UTC().Truncate(time.Microsecond))
 }
 
 // ApplyTable indexes an Iceberg table from a table.created/table.updated event (ADR 0085). It

@@ -616,6 +616,158 @@ func runStoreTests(t *testing.T, newStore func(t *testing.T) Store) {
 			t.Errorf("late event for a phantom tombstone = %v, %v; want not applied", applied, err)
 		}
 	})
+
+	// ApplyPostgresTable/RemovePostgresTable are ADR 0116's postgres-table half of this Store:
+	// identity is (workspace, schema, name) rather than a UUID, a hand-registered row is
+	// merged into rather than duplicated, and a delete marks Missing rather than tombstoning
+	// (the row, its listing and its Get all stay visible) — the real differences from
+	// ApplyTableAndRemoveTable above.
+	t.Run("ApplyPostgresTableAndRemovePostgresTable", func(t *testing.T) {
+		s := newStore(t)
+		base := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+		at := func(n int) time.Time { return base.Add(time.Duration(n) * time.Minute) }
+		rows := int64(1696)
+		up := func(schema, name string, when int) PostgresTableUpsert {
+			return PostgresTableUpsert{
+				Workspace: "acme", SourceModule: "database", Schema: schema, Name: name,
+				Kind: TableKindTable, Columns: []Column{{Name: "id", Type: "bigint"}}, ApproxRows: &rows,
+				At: at(when), NewID: asset.NewID(), ReceivedAt: at(1000 + when),
+			}
+		}
+		findByName := func(name string) (Dataset, bool) {
+			page, err := s.List(ctx, "acme", ListFilter{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, d := range page.Items {
+				if d.Name == name {
+					return d, true
+				}
+			}
+			return Dataset{}, false
+		}
+
+		// Create: a brand new identity gets a Source: "auto" row, named schema.name.
+		u := up("nfl_data", "players", 0)
+		applied, err := s.ApplyPostgresTable(ctx, u)
+		if err != nil || !applied {
+			t.Fatalf("ApplyPostgresTable(create) = %v, %v; want applied", applied, err)
+		}
+		d, ok := findByName("nfl_data.players")
+		if !ok {
+			t.Fatal("indexed table not found by its computed name")
+		}
+		if d.Format != FormatPostgres || d.Source != SourceAuto || d.PostgresTable == nil ||
+			d.PostgresTable.Schema != "nfl_data" || d.PostgresTable.Name != "players" ||
+			d.Kind != TableKindTable || d.ApproxRows == nil || *d.ApproxRows != 1696 || d.Missing {
+			t.Errorf("indexed dataset = %+v", d)
+		}
+		if got, err := s.Get(ctx, "acme", d.ID); err != nil || got.ID != d.ID {
+			t.Errorf("Get(%s) = %+v, %v", d.ID, got, err)
+		}
+
+		// Update: a later event for the same identity refreshes columns/kind/approxRows in place.
+		updated := up("nfl_data", "players", 1)
+		updated.Kind = TableKindView
+		if applied, err = s.ApplyPostgresTable(ctx, updated); err != nil || !applied {
+			t.Fatalf("update ApplyPostgresTable = %v, %v", applied, err)
+		}
+		got, err := s.Get(ctx, "acme", d.ID)
+		if err != nil || got.Kind != TableKindView {
+			t.Errorf("after update: %+v, %v", got, err)
+		}
+
+		// A stale (older) event is a no-op.
+		stale := up("nfl_data", "players", -5)
+		stale.Kind = TableKindMaterializedView
+		if applied, err = s.ApplyPostgresTable(ctx, stale); err != nil || applied {
+			t.Errorf("stale ApplyPostgresTable = %v, %v; want not applied", applied, err)
+		}
+		if got, err = s.Get(ctx, "acme", d.ID); err != nil || got.Kind != TableKindView {
+			t.Errorf("a stale event changed the row: %+v, %v", got, err)
+		}
+
+		// The computed name colliding with an unrelated, already-registered dataset is a real
+		// error (ErrExists), not something retrying fixes.
+		mustCreate(t, s, sample("acme", "finance.ledger"))
+		collide := up("finance", "ledger", 2)
+		if _, err := s.ApplyPostgresTable(ctx, collide); !errors.Is(err, asset.ErrExists) {
+			t.Errorf("name-colliding ApplyPostgresTable = %v, want ErrExists", err)
+		}
+
+		// Merging into a hand-registered row keeps its description/tags/owner and its manual
+		// Source — the identity match is (workspace, schema, name), the same postgresTable a
+		// manual row already carries (ADR 0102).
+		hand := samplePostgres("acme", "Curated Rosters")
+		hand.PostgresTable = &PostgresTableRef{Schema: "nfl_data", Name: "coaches"}
+		hand.Description, hand.Tags, hand.Owner = "hand-curated", []string{"sports"}, "alice"
+		// Source: "manual" the way Service.Create always sets it for a hand-registered
+		// format: "postgres" row — mustCreate below calls the Store directly, which (like
+		// Create for every other field) trusts the caller rather than inferring this itself.
+		hand.Source = SourceManual
+		mustCreate(t, s, hand)
+		// hand.UpdatedAt is stamped from the real clock (samplePostgres), which can be after
+		// this test's synthetic 2026-10-14T12:00 base; merge from comfortably further ahead
+		// instead of a fixed offset from base, so this never looks stale by coincidence.
+		merged := up("nfl_data", "coaches", 3)
+		merged.At = time.Now().UTC().Add(time.Hour)
+		if applied, err = s.ApplyPostgresTable(ctx, merged); err != nil || !applied {
+			t.Fatalf("merge ApplyPostgresTable = %v, %v", applied, err)
+		}
+		gotHand, err := s.Get(ctx, "acme", hand.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotHand.Name != "Curated Rosters" || gotHand.Description != "hand-curated" || gotHand.Owner != "alice" ||
+			len(gotHand.Tags) != 1 || gotHand.Tags[0] != "sports" {
+			t.Errorf("merge changed hand-set fields: %+v", gotHand)
+		}
+		if gotHand.Source != SourceManual || gotHand.Kind != TableKindTable {
+			t.Errorf("merge result = %+v, want Source still manual and Kind refreshed", gotHand)
+		}
+
+		// RemovePostgresTable marks Missing: unlike RemoveTable, the row stays visible to every read.
+		applied, err = s.RemovePostgresTable(ctx, "acme", "nfl_data", "players", at(4))
+		if err != nil || !applied {
+			t.Fatalf("RemovePostgresTable = %v, %v; want applied", applied, err)
+		}
+		got, err = s.Get(ctx, "acme", d.ID)
+		if err != nil || !got.Missing {
+			t.Fatalf("Get after delete = %+v, %v; want Missing, not ErrNotFound", got, err)
+		}
+		if _, ok := findByName("nfl_data.players"); !ok {
+			t.Error("a Missing row disappeared from List — ADR 0116 fork C requires it stay visible")
+		}
+
+		// A stale created/updated from before the delete cannot clear Missing.
+		lateStale := up("nfl_data", "players", 1)
+		if applied, err = s.ApplyPostgresTable(ctx, lateStale); err != nil || applied {
+			t.Errorf("stale ApplyPostgresTable after delete = %v, %v; want not applied", applied, err)
+		}
+		if got, err = s.Get(ctx, "acme", d.ID); err != nil || !got.Missing {
+			t.Errorf("a stale event cleared Missing: %+v, %v", got, err)
+		}
+
+		// A genuinely newer event (the table recreated) clears Missing.
+		revived := up("nfl_data", "players", 5)
+		if applied, err = s.ApplyPostgresTable(ctx, revived); err != nil || !applied {
+			t.Fatalf("revive ApplyPostgresTable = %v, %v", applied, err)
+		}
+		if got, err = s.Get(ctx, "acme", d.ID); err != nil || got.Missing {
+			t.Errorf("after revive: %+v, %v", got, err)
+		}
+
+		// Removing a table the catalog never saw records a Missing placeholder rather than
+		// erroring, and that placeholder then blocks a stale late event the same way.
+		applied, err = s.RemovePostgresTable(ctx, "acme", "nfl_data", "never-seen", at(6))
+		if err != nil || !applied {
+			t.Errorf("RemovePostgresTable of an unseen table = %v, %v; want applied", applied, err)
+		}
+		neverSeenLate := up("nfl_data", "never-seen", 1)
+		if applied, err = s.ApplyPostgresTable(ctx, neverSeenLate); err != nil || applied {
+			t.Errorf("late event for a phantom placeholder = %v, %v; want not applied", applied, err)
+		}
+	})
 }
 
 func TestMemoryStore(t *testing.T) {

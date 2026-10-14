@@ -232,7 +232,7 @@ func TestService_ApplyTableIndexesAnIcebergDataset(t *testing.T) {
 	if _, err := svc.Update(ctx, "acme", d.ID, validInput()); !errors.Is(err, asset.ErrManagedExternally) {
 		t.Errorf("manual Update of an iceberg row: %v, want ErrManagedExternally", err)
 	}
-	if err := svc.Delete(ctx, "acme", d.ID); !errors.Is(err, asset.ErrManagedExternally) {
+	if err := svc.Delete(ctx, "acme", d.ID, true); !errors.Is(err, asset.ErrManagedExternally) {
 		t.Errorf("manual Delete of an iceberg row: %v, want ErrManagedExternally", err)
 	}
 }
@@ -282,6 +282,161 @@ func TestService_RemoveTableTombstonesAndBlocksResurrection(t *testing.T) {
 	applied, err = svc.RemoveTable(ctx, "acme", "lakehouse", "never-seen", mustParseTime(t, "2026-09-28T15:00:00Z"))
 	if err != nil || !applied {
 		t.Errorf("RemoveTable of an unseen table = %v, %v; want applied (a recorded tombstone)", applied, err)
+	}
+}
+
+// TestService_ApplyPostgresTableIndexesAnAutoRow mirrors
+// TestService_ApplyTableIndexesAnIcebergDataset for ADR 0116's postgres-table half: a brand
+// new identity creates a Source: "auto" row, read-only through the manual write API.
+func TestService_ApplyPostgresTableIndexesAnAutoRow(t *testing.T) {
+	svc := newSvc()
+	rows := int64(1696)
+	u := PostgresTableUpsert{
+		Workspace: "acme", SourceModule: "database", Schema: "nfl_data", Name: "players",
+		Kind: TableKindTable, Columns: []Column{{Name: "id", Type: "bigint"}}, ApproxRows: &rows,
+		At: mustParseTime(t, "2026-10-14T12:00:00Z"),
+	}
+	applied, err := svc.ApplyPostgresTable(ctx, u)
+	if err != nil || !applied {
+		t.Fatalf("ApplyPostgresTable = %v, %v; want applied", applied, err)
+	}
+
+	page, err := svc.List(ctx, "acme", ListFilter{})
+	if err != nil || page.Total != 1 {
+		t.Fatalf("List = %+v, %v", page, err)
+	}
+	d := page.Items[0]
+	if d.Format != FormatPostgres || d.Source != SourceAuto || d.Name != "nfl_data.players" ||
+		d.PostgresTable == nil || d.PostgresTable.Schema != "nfl_data" || d.PostgresTable.Name != "players" {
+		t.Fatalf("indexed dataset = %+v", d)
+	}
+	if d.Kind != TableKindTable || d.ApproxRows == nil || *d.ApproxRows != 1696 {
+		t.Errorf("kind/approxRows = %+v", d)
+	}
+
+	// Read-only through the manual write API, exactly like an Iceberg row.
+	if _, err := svc.Update(ctx, "acme", d.ID, validInput()); !errors.Is(err, asset.ErrManagedExternally) {
+		t.Errorf("manual Update of an auto postgres row: %v, want ErrManagedExternally", err)
+	}
+	if err := svc.Delete(ctx, "acme", d.ID, true); !errors.Is(err, asset.ErrManagedExternally) {
+		t.Errorf("manual Delete of a present (non-missing) auto postgres row, even as owner: %v, want ErrManagedExternally", err)
+	}
+
+	// A stale (older) event changes nothing.
+	stale := u
+	stale.Kind, stale.At = TableKindView, mustParseTime(t, "2026-10-14T11:00:00Z")
+	if applied, err = svc.ApplyPostgresTable(ctx, stale); err != nil || applied {
+		t.Errorf("stale ApplyPostgresTable = %v, %v; want not applied", applied, err)
+	}
+}
+
+// TestService_ApplyPostgresTableMergesHandRegisteredRow confirms ADR 0116 point 5: a matching
+// hand-registered row is enriched, not duplicated, and keeps its description/tags/owner and
+// its manual editability.
+func TestService_ApplyPostgresTableMergesHandRegisteredRow(t *testing.T) {
+	svc := newSvc()
+	hand, err := svc.Create(ctx, "acme", alice, Input{
+		Name: "NFL Players", Description: "Curated by hand", Tags: []string{"sports"}, Owner: "alice",
+		Format: FormatPostgres, PostgresTable: &PostgresTableRef{Schema: "nfl_data", Name: "players"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	applied, err := svc.ApplyPostgresTable(ctx, PostgresTableUpsert{
+		Workspace: "acme", SourceModule: "database", Schema: "nfl_data", Name: "players",
+		Kind: TableKindTable, Columns: []Column{{Name: "id", Type: "bigint"}},
+		At: hand.UpdatedAt.Add(time.Hour),
+	})
+	if err != nil || !applied {
+		t.Fatalf("ApplyPostgresTable(merge) = %v, %v; want applied", applied, err)
+	}
+
+	got, err := svc.Get(ctx, "acme", hand.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "NFL Players" || got.Description != "Curated by hand" || got.Owner != "alice" || len(got.Tags) != 1 || got.Tags[0] != "sports" {
+		t.Errorf("merge changed hand-set fields: %+v", got)
+	}
+	if got.Source != SourceManual {
+		t.Errorf("Source = %q, want it to stay manual after a merge", got.Source)
+	}
+	if got.Kind != TableKindTable || len(got.Schema) != 1 {
+		t.Errorf("merge didn't refresh the introspected fields: %+v", got)
+	}
+
+	// Still editable and deletable through the manual write API.
+	if _, err := svc.Update(ctx, "acme", hand.ID, validInput()); err != nil {
+		t.Errorf("manual Update of a merged hand-registered row: %v", err)
+	}
+}
+
+// TestService_RemovePostgresTableMarksMissingButKeepsTheRowVisible is ADR 0116 fork C: unlike
+// RemoveTable's hidden tombstone, a database.table.deleted row stays listed and gettable.
+func TestService_RemovePostgresTableMarksMissingButKeepsTheRowVisible(t *testing.T) {
+	svc := newSvc()
+	u := PostgresTableUpsert{
+		Workspace: "acme", SourceModule: "database", Schema: "nfl_data", Name: "players",
+		Kind: TableKindTable, At: mustParseTime(t, "2026-10-14T12:00:00Z"),
+	}
+	if _, err := svc.ApplyPostgresTable(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	applied, err := svc.RemovePostgresTable(ctx, "acme", "nfl_data", "players", mustParseTime(t, "2026-10-14T13:00:00Z"))
+	if err != nil || !applied {
+		t.Fatalf("RemovePostgresTable = %v, %v; want applied", applied, err)
+	}
+
+	page, err := svc.List(ctx, "acme", ListFilter{})
+	if err != nil || page.Total != 1 || !page.Items[0].Missing {
+		t.Fatalf("after delete, List = %+v, %v; want one Missing row still listed", page, err)
+	}
+	got, err := svc.Get(ctx, "acme", page.Items[0].ID)
+	if err != nil || !got.Missing {
+		t.Fatalf("Get after delete = %+v, %v; want Missing, not ErrNotFound", got, err)
+	}
+
+	// A later created clears Missing.
+	revived := u
+	revived.At = mustParseTime(t, "2026-10-14T14:00:00Z")
+	if applied, err = svc.ApplyPostgresTable(ctx, revived); err != nil || !applied {
+		t.Fatalf("revive ApplyPostgresTable = %v, %v", applied, err)
+	}
+	if got, err = svc.Get(ctx, "acme", got.ID); err != nil || got.Missing {
+		t.Errorf("after revive: %+v, %v", got, err)
+	}
+}
+
+// TestService_DeleteMissingAutoRowRequiresOwner is ADR 0116's one exception to an auto row
+// being read-only: once Missing, an owner (not merely an editor) may remove it by hand.
+func TestService_DeleteMissingAutoRowRequiresOwner(t *testing.T) {
+	svc := newSvc()
+	u := PostgresTableUpsert{Workspace: "acme", SourceModule: "database", Schema: "nfl_data", Name: "players", Kind: TableKindTable, At: mustParseTime(t, "2026-10-14T12:00:00Z")}
+	if _, err := svc.ApplyPostgresTable(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RemovePostgresTable(ctx, "acme", "nfl_data", "players", mustParseTime(t, "2026-10-14T13:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	page, err := svc.List(ctx, "acme", ListFilter{})
+	if err != nil || page.Total != 1 {
+		t.Fatal(err)
+	}
+	id := page.Items[0].ID
+
+	if err := svc.Delete(ctx, "acme", id, false); !errors.Is(err, asset.ErrForbidden) {
+		t.Errorf("editor deleting a missing auto row: %v, want ErrForbidden", err)
+	}
+	// Still there: a refused delete must not have removed it.
+	if _, err := svc.Get(ctx, "acme", id); err != nil {
+		t.Errorf("after a refused delete: %v", err)
+	}
+	if err := svc.Delete(ctx, "acme", id, true); err != nil {
+		t.Errorf("owner deleting a missing auto row: %v, want nil", err)
+	}
+	if _, err := svc.Get(ctx, "acme", id); !errors.Is(err, asset.ErrNotFound) {
+		t.Errorf("after owner delete: %v, want ErrNotFound", err)
 	}
 }
 

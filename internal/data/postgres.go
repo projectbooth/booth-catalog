@@ -35,7 +35,7 @@ func NewPostgresStore(ctx context.Context, pool *pgxpool.Pool) (*PostgresStore, 
 
 const selectCols = `id, workspace, name, description, backend_id, path, columns, tags, owner, created_by, created_at, updated_at,
 	format, table_namespace, table_name, table_uuid, table_current_snapshot_id, source_module,
-	postgres_table_schema, postgres_table_name`
+	postgres_table_schema, postgres_table_name, source, kind, approx_rows, missing`
 
 // searchable is the text a query is matched against: name, description and the tags joined
 // into one string (so a query term matches inside any tag).
@@ -47,10 +47,11 @@ func scan(row pgx.Row) (Dataset, error) {
 	var tableNamespace, tableName, tableUUID string
 	var snapshotID *int64
 	var pgSchema, pgTableName string
+	var source, kind string
 	if err := row.Scan(&d.ID, &d.Workspace, &d.Name, &d.Description, &d.Location.BackendID, &d.Location.Path,
 		&d.Schema, &d.Tags, &d.Owner, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt,
 		&format, &tableNamespace, &tableName, &tableUUID, &snapshotID, &d.SourceModule,
-		&pgSchema, &pgTableName); err != nil {
+		&pgSchema, &pgTableName, &source, &kind, &d.ApproxRows, &d.Missing); err != nil {
 		return Dataset{}, err
 	}
 	if d.Schema == nil {
@@ -65,6 +66,7 @@ func scan(row pgx.Row) (Dataset, error) {
 		d.Table = &TableRef{Namespace: tableNamespace, Name: tableName, UUID: tableUUID, CurrentSnapshotID: snapshotID}
 	case FormatPostgres:
 		d.PostgresTable = &PostgresTableRef{Schema: pgSchema, Name: pgTableName}
+		d.Source, d.Kind = Source(source), TableKind(kind)
 	}
 	d.CreatedAt, d.UpdatedAt = d.CreatedAt.UTC(), d.UpdatedAt.UTC()
 	return d, nil
@@ -101,11 +103,11 @@ func (s *PostgresStore) Create(ctx context.Context, d Dataset) error {
 	pgSchema, pgTable := postgresTableCols(d)
 	_, err := s.pool.Exec(ctx, `INSERT INTO datasets
 		(id, workspace, name, description, backend_id, path, columns, tags, owner, created_by, created_at, updated_at,
-		 format, postgres_table_schema, postgres_table_name)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		 format, postgres_table_schema, postgres_table_name, source)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
 		d.ID, d.Workspace, d.Name, d.Description, d.Location.BackendID, d.Location.Path,
 		d.Schema, d.Tags, d.Owner, d.CreatedBy, d.CreatedAt, d.UpdatedAt,
-		string(d.Format), pgSchema, pgTable)
+		string(d.Format), pgSchema, pgTable, string(d.Source))
 	if isUniqueViolation(err) {
 		return asset.ErrExists
 	}
@@ -131,10 +133,10 @@ func (s *PostgresStore) Update(ctx context.Context, d Dataset) error {
 	pgSchema, pgTable := postgresTableCols(d)
 	tag, err := s.pool.Exec(ctx, `UPDATE datasets SET
 		name = $3, description = $4, backend_id = $5, path = $6, columns = $7, tags = $8, owner = $9, updated_at = $10,
-		format = $11, postgres_table_schema = $12, postgres_table_name = $13
+		format = $11, postgres_table_schema = $12, postgres_table_name = $13, source = $14
 		WHERE workspace = $1 AND id = $2 AND deleted_at IS NULL`,
 		d.Workspace, d.ID, d.Name, d.Description, d.Location.BackendID, d.Location.Path, d.Schema, d.Tags, d.Owner, d.UpdatedAt,
-		string(d.Format), pgSchema, pgTable)
+		string(d.Format), pgSchema, pgTable, string(d.Source))
 	if isUniqueViolation(err) {
 		return asset.ErrExists
 	}
@@ -333,6 +335,76 @@ func (s *PostgresStore) RemoveTable(ctx context.Context, ws, sourceModule, table
 	}
 	if err != nil {
 		return false, fmt.Errorf("tombstoning table: %w", err)
+	}
+	return true, nil
+}
+
+// ApplyPostgresTable upserts a format: "postgres" row from a database.table.created/updated
+// event (ADR 0116). The ON CONFLICT target is the identity index on (workspace, schema,
+// name): it fires for both a previously auto-created row and a hand-registered one (ADR
+// 0102's manual write API already populates postgres_table_schema/name), which is exactly
+// how a hand-registered row gets merged into rather than duplicated. The UPDATE SET
+// deliberately leaves name, description, tags, owner and source untouched — only columns,
+// kind, approx_rows and missing refresh — so merging into a hand-registered row never
+// overwrites what a person set, and never silently takes over its editability.
+func (s *PostgresStore) ApplyPostgresTable(ctx context.Context, u PostgresTableUpsert) (bool, error) {
+	name := postgresDatasetName(u.Schema, u.Name)
+	var id string
+	err := s.pool.QueryRow(ctx, `INSERT INTO datasets
+		(id, workspace, name, description, backend_id, path, columns, tags, owner, created_by,
+		 created_at, updated_at, format, source, kind, approx_rows, missing,
+		 postgres_table_schema, postgres_table_name)
+		VALUES ($1,$2,$3,'','','',$4,'{}','','',$5,$6,'postgres','auto',$7,$8,false,$9,$10)
+		ON CONFLICT (workspace, postgres_table_schema, postgres_table_name) WHERE format = 'postgres' DO UPDATE SET
+			columns = EXCLUDED.columns, kind = EXCLUDED.kind, approx_rows = EXCLUDED.approx_rows,
+			missing = false, updated_at = EXCLUDED.updated_at
+		WHERE datasets.updated_at <= EXCLUDED.updated_at
+		RETURNING id`,
+		u.NewID, u.Workspace, name, u.Columns,
+		u.ReceivedAt, u.At, string(u.Kind), u.ApproxRows, u.Schema, u.Name).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil // stale: an event for this table published later was already applied
+	}
+	if isUniqueViolation(err) {
+		// The conflict target above only arbitrates (workspace, schema, name) identity; this
+		// is the *other* unique constraint, UNIQUE(workspace, name) — the computed name
+		// collides with an unrelated existing dataset. Retrying changes nothing; the caller
+		// (events.Processor) treats asset.ErrExists as unfixable.
+		return false, asset.ErrExists
+	}
+	if err != nil {
+		return false, fmt.Errorf("upserting postgres table: %w", err)
+	}
+	return true, nil
+}
+
+// RemovePostgresTable marks a database.table.deleted event's row Missing=true — visible, with
+// its search entry and lineage intact (ADR 0116 fork C), never removed and never tombstoned
+// the way RemoveTable hides an Iceberg row. A table the catalog never saw still gets a
+// Missing=true placeholder recorded (columns: '[]', readable rather than RemoveTable's
+// never-read '{}' placeholder, since this row stays visible), so a later out-of-order
+// created/updated for the same identity has something to merge into.
+func (s *PostgresStore) RemovePostgresTable(ctx context.Context, ws, schema, name string, at time.Time) (bool, error) {
+	dname := postgresDatasetName(schema, name)
+	var id string
+	err := s.pool.QueryRow(ctx, `INSERT INTO datasets
+		(id, workspace, name, description, backend_id, path, columns, tags, owner, created_by,
+		 created_at, updated_at, format, source, kind, approx_rows, missing,
+		 postgres_table_schema, postgres_table_name)
+		VALUES ($1,$2,$3,'','','','[]','{}','','',$4,$4,'postgres','auto','',NULL,true,$5,$6)
+		ON CONFLICT (workspace, postgres_table_schema, postgres_table_name) WHERE format = 'postgres' DO UPDATE SET
+			missing = true, updated_at = EXCLUDED.updated_at
+		WHERE datasets.updated_at <= EXCLUDED.updated_at
+		RETURNING id`,
+		asset.NewID(), ws, dname, at, schema, name).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil // stale
+	}
+	if isUniqueViolation(err) {
+		return false, asset.ErrExists
+	}
+	if err != nil {
+		return false, fmt.Errorf("marking postgres table missing: %w", err)
 	}
 	return true, nil
 }
