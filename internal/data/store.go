@@ -54,12 +54,15 @@ type Store interface {
 	// or database.table.updated event (ADR 0116), identified by (workspace, schema, name) —
 	// never a UUID, since a real Postgres table has none. If a matching row already exists —
 	// hand-registered (ADR 0102) or previously auto-created — it is merged: Columns, Kind and
-	// ApproxRows refresh and Missing clears, while Name, Description, Tags and Owner (and,
-	// for a hand-registered row, Source) are left exactly as they are. Otherwise a new row is
-	// created with Source=SourceAuto and no Description/Tags/Owner. Reports whether the event
-	// was applied (false: stale, older than one already applied to the same identity).
-	// asset.ErrExists means a freshly created row's computed name collides with an unrelated
-	// existing dataset — the caller (the events Processor) treats that as unfixable.
+	// ApproxRows refresh and Missing clears, while Name, Tags, Owner and (for a hand-registered
+	// row specifically) Source are left exactly as they are. Description follows Comment only
+	// for a row that isn't hand-registered (Source != SourceManual) — a person's own typed
+	// description is never overwritten, but nothing hand-typed an auto row's, so it tracks the
+	// real table/view's comment. Otherwise a new row is created with Source=SourceAuto,
+	// Description=Comment, and no Tags/Owner. Reports whether the event was applied (false:
+	// stale, older than one already applied to the same identity). asset.ErrExists means a
+	// freshly created row's computed name collides with an unrelated existing dataset — the
+	// caller (the events Processor) treats that as unfixable.
 	ApplyPostgresTable(ctx context.Context, u PostgresTableUpsert) (applied bool, err error)
 	// RemovePostgresTable marks a database.table.deleted event's row Missing=true — visible,
 	// with its search entry and lineage intact (ADR 0116 fork C), unlike RemoveTable's hidden

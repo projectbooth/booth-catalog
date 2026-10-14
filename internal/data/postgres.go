@@ -344,9 +344,12 @@ func (s *PostgresStore) RemoveTable(ctx context.Context, ws, sourceModule, table
 // name): it fires for both a previously auto-created row and a hand-registered one (ADR
 // 0102's manual write API already populates postgres_table_schema/name), which is exactly
 // how a hand-registered row gets merged into rather than duplicated. The UPDATE SET
-// deliberately leaves name, description, tags, owner and source untouched — only columns,
-// kind, approx_rows and missing refresh — so merging into a hand-registered row never
-// overwrites what a person set, and never silently takes over its editability.
+// deliberately leaves name, tags, owner and source untouched — only columns, kind,
+// approx_rows and missing unconditionally refresh — so merging into a hand-registered row
+// never overwrites what a person set, and never silently takes over its editability.
+// description is the one field that depends on what it's merging into: a hand-registered
+// row's own typed description survives (source = 'manual' keeps datasets.description), but
+// nothing hand-typed an auto row's, so its description tracks the table/view's own comment.
 func (s *PostgresStore) ApplyPostgresTable(ctx context.Context, u PostgresTableUpsert) (bool, error) {
 	name := postgresDatasetName(u.Schema, u.Name)
 	var id string
@@ -354,13 +357,14 @@ func (s *PostgresStore) ApplyPostgresTable(ctx context.Context, u PostgresTableU
 		(id, workspace, name, description, backend_id, path, columns, tags, owner, created_by,
 		 created_at, updated_at, format, source, kind, approx_rows, missing,
 		 postgres_table_schema, postgres_table_name)
-		VALUES ($1,$2,$3,'','','',$4,'{}','','',$5,$6,'postgres','auto',$7,$8,false,$9,$10)
+		VALUES ($1,$2,$3,$4,'','',$5,'{}','','',$6,$7,'postgres','auto',$8,$9,false,$10,$11)
 		ON CONFLICT (workspace, postgres_table_schema, postgres_table_name) WHERE format = 'postgres' DO UPDATE SET
+			description = CASE WHEN datasets.source = 'manual' THEN datasets.description ELSE EXCLUDED.description END,
 			columns = EXCLUDED.columns, kind = EXCLUDED.kind, approx_rows = EXCLUDED.approx_rows,
 			missing = false, updated_at = EXCLUDED.updated_at
 		WHERE datasets.updated_at <= EXCLUDED.updated_at
 		RETURNING id`,
-		u.NewID, u.Workspace, name, u.Columns,
+		u.NewID, u.Workspace, name, u.Comment, u.Columns,
 		u.ReceivedAt, u.At, string(u.Kind), u.ApproxRows, u.Schema, u.Name).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil // stale: an event for this table published later was already applied

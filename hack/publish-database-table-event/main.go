@@ -1,12 +1,12 @@
 // Command publish-database-table-event puts one database.table.created / updated / deleted
-// event on the event bus, in the provisional shape ADR 0116
-// (booth-architecture/decisions/0116-workspace-database-tables-in-catalog-with-preview-and-sql.md)
-// describes. It is dev tooling, mirroring hack/publish-dashboard-event: what booth-database will
-// do for real, done by hand, so the catalog's database-table handling can be built and
-// demonstrated before booth-database's own publisher exists.
+// event on the event bus, in the shape ADR 0116's "Built as" section
+// (booth-architecture/decisions/0116-workspace-database-tables-in-catalog-with-preview-and-sql.md,
+// booth-database PR #13) describes. It is dev tooling, mirroring hack/publish-dashboard-event:
+// what booth-database does for real, done by hand, useful for exercising the catalog's side
+// without a real booth-database in the cluster.
 //
 //	go run ./hack/publish-database-table-event -url nats://localhost:4222 -workspace acme \
-//	    -type created -schema nfl_data -name players -kind table -approx-rows 1696 \
+//	    -type created -schema nfl_data -name players -kind table -comment "the NFL roster" -approx-rows 1696 \
 //	    -columns '[{"name":"player_id","type":"bigint","nullable":false},{"name":"name","type":"text","nullable":true,"comment":"display name"}]'
 //
 // With -create-stream it first creates the BOOTH_EVENTS stream the way booth-core does (so this
@@ -34,10 +34,11 @@ func main() {
 		module       = flag.String("module", "database", "publishing module id (the envelope's publishedBy)")
 		schema       = flag.String("schema", "", "Postgres schema name (required)")
 		name         = flag.String("name", "", "Postgres table name (required)")
-		kind         = flag.String("kind", "table", "table, view or materialized view (required for created/updated)")
-		columns      = flag.String("columns", "[]", `JSON array of {"name","type","nullable","comment"}`)
-		approxRows   = flag.Int64("approx-rows", -1, "approximate row count; omit (leave at -1) for unknown/null")
-		schemaHash   = flag.String("schema-hash", "", "booth-database's own change-detection key — carried on the wire but never read by the catalog")
+		kind         = flag.String("kind", "table", "table, view or materialized_view (required for created/updated)")
+		comment      = flag.String("comment", "", "the table/view's own Postgres comment; empty means null")
+		columns      = flag.String("columns", "[]", `JSON array of {"name","type","nullable","comment"}, in column order`)
+		approxRows   = flag.Int64("approx-rows", -1, "approximate row count; omit (leave at -1) for unknown/null -- always null for a view")
+		schemaHash   = flag.String("schema-hash", "", "hex SHA-256 of kind, comment and columns — carried on the wire but never read by the catalog")
 		at           = flag.String("at", "", "publishedAt as RFC 3339 (default: now)")
 		createStream = flag.Bool("create-stream", false, "create the BOOTH_EVENTS stream if missing")
 	)
@@ -65,6 +66,11 @@ func main() {
 	data := map[string]any{"schema": *schema, "name": *name}
 	if *eventType != "deleted" {
 		data["kind"], data["columns"] = *kind, cols
+		if *comment != "" {
+			data["comment"] = *comment
+		} else {
+			data["comment"] = nil
+		}
 		if *approxRows >= 0 {
 			data["approxRows"] = *approxRows
 		} else {

@@ -33,7 +33,7 @@ const (
 	// maxPgIdent matches Postgres's own identifier length limit (NAMEDATALEN 64, so 63 usable
 	// bytes) — ADR 0102's postgresTable.schema/name.
 	maxPgIdent = 63
-	// maxKind bounds database.table.*'s kind field (ADR 0116) — "materialized view" is the
+	// maxKind bounds database.table.*'s kind field (ADR 0116) — "materialized_view" is the
 	// longest of the three values the ADR names, with slack for a value this build doesn't
 	// recognize yet (unknown fields/values are tolerated, never guessed at or rejected outright).
 	maxKind = 50
@@ -86,16 +86,17 @@ const (
 	SourceAuto   Source = "auto"
 )
 
-// TableKind is a Postgres relation kind (ADR 0116), as booth-database's introspection reports
-// it: "table", "view" or "materialized view" today. A plain string, like Format above, so a
-// kind value this build doesn't recognize yet still round-trips and displays rather than
-// erroring — booth-database's exact vocabulary is still provisional.
+// TableKind is a Postgres relation kind (ADR 0116 "Built as"), as booth-database's
+// introspection reports it: "table" (partitioned tables included), "view" or
+// "materialized_view" (partitions and foreign tables are never published at all). A plain
+// string, like Format above, so a kind value this build doesn't recognize yet still
+// round-trips and displays rather than erroring.
 type TableKind string
 
 const (
 	TableKindTable            TableKind = "table"
 	TableKindView             TableKind = "view"
-	TableKindMaterializedView TableKind = "materialized view"
+	TableKindMaterializedView TableKind = "materialized_view"
 )
 
 // TableRef is the Iceberg-specific identity a format: "iceberg" row carries (ADR 0085),
@@ -184,7 +185,7 @@ type Dataset struct {
 	// exactly as a FormatIceberg row does, with one exception: Service.Delete lets an owner
 	// remove it by hand once Missing is true.
 	Source Source `json:"source,omitempty"`
-	// Kind is the real object's relation kind ("table", "view", "materialized view"), as
+	// Kind is the real object's relation kind ("table", "view", "materialized_view"), as
 	// booth-database's introspection reports it — never guessed here.
 	Kind TableKind `json:"kind,omitempty"`
 	// ApproxRows is Postgres's own planner estimate, never an exact count and never obtained
@@ -426,8 +427,13 @@ type PostgresTableUpsert struct {
 	Schema       string
 	Name         string
 	Kind         TableKind
-	Columns      []Column
-	// ApproxRows is nil when booth-database reports it unknown ("approxRows": null).
+	// Comment is the table/view's own Postgres comment, "" when booth-database reports it
+	// unset ("comment": null). Merged into a row's Description — see
+	// ApplyPostgresTable's doc comment for exactly when.
+	Comment string
+	Columns []Column
+	// ApproxRows is nil when booth-database reports it unknown ("approxRows": null; always
+	// null for a view).
 	ApproxRows *int64
 	// At is the event's publishedAt: last-writer-wins, exactly like TableUpsert.At.
 	At time.Time
@@ -464,6 +470,9 @@ func (u PostgresTableUpsert) Normalize() (PostgresTableUpsert, error) {
 		return PostgresTableUpsert{}, err
 	}
 	out.Kind = TableKind(kind)
+	if out.Comment, err = asset.Text("comment", u.Comment, maxDescription, false, true); err != nil {
+		return PostgresTableUpsert{}, err
+	}
 	if out.Columns, err = normalizeSchema(u.Columns); err != nil {
 		return PostgresTableUpsert{}, err
 	}

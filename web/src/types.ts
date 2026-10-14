@@ -77,7 +77,7 @@ export interface Dataset {
    *  existed is treated the same as "manual" by the UI below. */
   source?: "manual" | "auto";
   /** The real object's relation kind (ADR 0116), as booth-database's introspection reports
-   *  it — "table", "view" and "materialized view" are what it names today, but this build
+   *  it — "table", "view" and "materialized_view" are what it names today, but this build
    *  displays any value rather than rejecting one it doesn't recognize yet. Present only
    *  when format is "postgres". */
   kind?: string;

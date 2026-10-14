@@ -417,8 +417,8 @@ describe("dataset detail", () => {
       expect(screen.getByText("about 1,696 rows")).toBeInTheDocument();
 
       const preview = await screen.findByRole("link", { name: "Preview rows" });
-      expect(preview).toHaveAttribute("href", "/database/tables/nfl_data/players/preview");
-      expect(screen.getByRole("link", { name: "Open in SQL console" })).toHaveAttribute("href", "/database/sql?schema=nfl_data&table=players");
+      expect(preview).toHaveAttribute("href", "/database/tables/nfl_data/players");
+      expect(screen.getByRole("link", { name: "Open in SQL console" })).toHaveAttribute("href", "/database/sql?schema=nfl_data&name=players");
 
       // Read-only through the write API, even for an owner, while the table is still present.
       expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();

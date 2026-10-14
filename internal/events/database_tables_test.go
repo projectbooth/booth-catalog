@@ -118,7 +118,9 @@ func TestDatabaseTableHandle_MergesIntoAHandRegisteredRow(t *testing.T) {
 	// other tests use (which predates it).
 	mergeAt := time.Now().UTC().Add(time.Hour)
 	res := NewDatabaseTableProcessor(svc).Handle(ctx, dbTableSubject("acme", EventDatabaseTableCreated),
-		envelope("acme", EventDatabaseTableCreated, "database", mergeAt, dbTableData("nfl_data", "players", map[string]any{"approxRows": int64(42)})))
+		envelope("acme", EventDatabaseTableCreated, "database", mergeAt, dbTableData("nfl_data", "players", map[string]any{
+			"approxRows": int64(42), "comment": "auto-generated table comment",
+		})))
 	if !res.Applied || res.Action != Ack {
 		t.Fatalf("result = %+v", res)
 	}
@@ -146,6 +148,44 @@ func TestDatabaseTableHandle_MergesIntoAHandRegisteredRow(t *testing.T) {
 	}
 }
 
+// An auto row (nothing hand-typed its description) tracks the real table's own comment —
+// unlike a hand-registered row, which TestDatabaseTableHandle_MergesIntoAHandRegisteredRow
+// confirms never gets overwritten.
+func TestDatabaseTableHandle_AutoRowDescriptionTracksTheComment(t *testing.T) {
+	svc := newDataService()
+	p := NewDatabaseTableProcessor(svc)
+
+	created := p.Handle(ctx, dbTableSubject("acme", EventDatabaseTableCreated),
+		envelope("acme", EventDatabaseTableCreated, "database", t0, dbTableData("nfl_data", "players", map[string]any{"comment": "the NFL roster"})))
+	if !created.Applied || created.Action != Ack {
+		t.Fatalf("created = %+v", created)
+	}
+	ds := listPostgresTables(t, svc, "acme")
+	if len(ds) != 1 || ds[0].Description != "the NFL roster" {
+		t.Fatalf("Description = %q, want the comment", ds[0].Description)
+	}
+
+	// The comment changes; a later update refreshes it, since nothing hand-typed it.
+	updated := p.Handle(ctx, dbTableSubject("acme", EventDatabaseTableUpdated),
+		envelope("acme", EventDatabaseTableUpdated, "database", t0.Add(time.Minute), dbTableData("nfl_data", "players", map[string]any{"comment": "renamed comment"})))
+	if !updated.Applied || updated.Action != Ack {
+		t.Fatalf("updated = %+v", updated)
+	}
+	if ds = listPostgresTables(t, svc, "acme"); ds[0].Description != "renamed comment" {
+		t.Errorf("Description = %q, want the refreshed comment", ds[0].Description)
+	}
+
+	// A null comment (no comment set on the real table) clears it the same way.
+	cleared := p.Handle(ctx, dbTableSubject("acme", EventDatabaseTableUpdated),
+		envelope("acme", EventDatabaseTableUpdated, "database", t0.Add(2*time.Minute), dbTableData("nfl_data", "players", map[string]any{"comment": nil})))
+	if !cleared.Applied || cleared.Action != Ack {
+		t.Fatalf("cleared = %+v", cleared)
+	}
+	if ds = listPostgresTables(t, svc, "acme"); ds[0].Description != "" {
+		t.Errorf("Description = %q, want cleared by a null comment", ds[0].Description)
+	}
+}
+
 func TestDatabaseTableHandle_StaleAndRedeliveredEvents(t *testing.T) {
 	svc := newDataService()
 	p := NewDatabaseTableProcessor(svc)
@@ -156,7 +196,7 @@ func TestDatabaseTableHandle_StaleAndRedeliveredEvents(t *testing.T) {
 
 	send(t0.Add(10*time.Second), "view")
 
-	stale := send(t0, "materialized view")
+	stale := send(t0, "materialized_view")
 	if stale.Action != Ack || stale.Applied || !strings.Contains(stale.Reason, "stale") {
 		t.Errorf("stale = %+v; want acked (nothing to retry) and not applied", stale)
 	}
