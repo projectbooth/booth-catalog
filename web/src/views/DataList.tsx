@@ -89,7 +89,7 @@ export function DataList({ v }: { v: ViewCtx }) {
                   </thead>
                   <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                     {page.items.map((d) => (
-                      <tr key={d.id}>
+                      <tr key={d.id} className={d.missing ? "opacity-60" : undefined}>
                         <td className="px-3 py-2 align-top">
                           <span className="flex flex-wrap items-center gap-1.5">
                             <Link className={`font-medium ${linkClass}`} href={v.href({ name: "data-detail", id: d.id })} onNavigate={v.goPath}>
@@ -97,11 +97,14 @@ export function DataList({ v }: { v: ViewCtx }) {
                             </Link>
                             {d.format === "iceberg" && <Chip tone="indigo">Iceberg</Chip>}
                             {d.format === "postgres" && <Chip tone="emerald">Postgres</Chip>}
+                            {d.missing && <Chip tone="slate">Missing</Chip>}
                           </span>
                           {d.description && <p className="mt-0.5 line-clamp-2 max-w-md text-xs text-slate-500 dark:text-slate-400">{d.description}</p>}
                         </td>
                         <td className="px-3 py-2 align-top font-mono text-xs text-slate-600 dark:text-slate-300">
-                          {d.format === "postgres" && d.postgresTable ? `${d.postgresTable.schema}.${d.postgresTable.name}` : formatLocation(d.location)}
+                          {d.format === "postgres" && d.postgresTable
+                            ? `${d.postgresTable.schema}.${d.postgresTable.name}${d.kind ? ` (${d.kind})` : ""}`
+                            : formatLocation(d.location)}
                         </td>
                         <td className="px-3 py-2 align-top">
                           <div className="flex flex-wrap gap-1">

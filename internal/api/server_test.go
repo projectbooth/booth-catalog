@@ -382,7 +382,7 @@ func TestDatasets_PostgresFormat(t *testing.T) {
 	body := map[string]any{"name": "pg_orders", "format": "postgres", "postgresTable": map[string]any{"schema": "public", "name": "orders"}}
 	d := e.createDataset("editor", body)
 
-	wantKeys := []string{"createdAt", "createdBy", "description", "format", "id", "location", "name", "owner", "postgresTable", "schema", "tags", "updatedAt"}
+	wantKeys := []string{"createdAt", "createdBy", "description", "format", "id", "location", "name", "owner", "postgresTable", "schema", "source", "tags", "updatedAt"}
 	if got := sortedKeys(d); !reflect.DeepEqual(got, wantKeys) {
 		t.Errorf("dataset keys = %v, want %v", got, wantKeys)
 	}

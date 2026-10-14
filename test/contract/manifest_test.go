@@ -210,13 +210,14 @@ func TestChart_OwnDatabaseMode(t *testing.T) {
 // ADR 0050: a module that omits `events` gets no event-bus credential and cannot connect to the
 // bus at all. This is the field whose absence silently disabled the dashboard subscription
 // (booth-e2e's SKIPped smoke.7-dashboard-event), so it is pinned exactly: the catalog subscribes
-// to dashboard.* and table.* (ADR 0085) and — least privilege — publishes nothing.
+// to dashboard.*, table.* (ADR 0085) and database.table.* (ADR 0116) and — least privilege —
+// publishes nothing.
 func TestManifest_DeclaresItsEventBusUsage(t *testing.T) {
 	m := renderBoothModule(t)
 	if m.Spec.Events == nil {
 		t.Fatal("spec.events is missing: without it booth-core mints no bus credential and the dashboard/table subscriptions cannot connect (ADR 0050)")
 	}
-	if want := []string{"dashboard.*", "table.*"}; !reflect.DeepEqual(m.Spec.Events.Subscribe, want) {
+	if want := []string{"dashboard.*", "table.*", "database.table.*"}; !reflect.DeepEqual(m.Spec.Events.Subscribe, want) {
 		t.Errorf("spec.events.subscribe = %v, want exactly %v", m.Spec.Events.Subscribe, want)
 	}
 	if len(m.Spec.Events.Publish) != 0 {

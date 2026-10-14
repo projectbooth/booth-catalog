@@ -8,6 +8,10 @@ export interface ViewCtx {
   /** Whether write controls are offered. A UX nicety only — booth-catalog's backend enforces the
    *  same rule on every write route (ADR 0023, ADR 0041), so a hidden button is not the boundary. */
   canWrite: boolean;
+  /** Whether the caller's role is "owner" specifically, not just editor-or-owner. A UX nicety
+   *  only, same caveat as canWrite — used for ADR 0116's one exception to an auto-discovered
+   *  Postgres row being read-only: an owner may delete a missing one by hand. */
+  isOwner: boolean;
   /** The href for a route, for real anchors. */
   href: (route: Route) => string;
   /** Navigate in-app to a route. */

@@ -9,6 +9,7 @@ import type {
   Dataset,
   DatasetInput,
   Location,
+  ModuleSummary,
   Page,
   SearchResult,
   StorageBackend,
@@ -202,6 +203,13 @@ export const getDashboard = (ctx: ApiContext, id: string) => request<DashboardDe
  *  to suggest before the person has typed something. */
 export const searchUsers = (ctx: ApiContext, q: string) =>
   request<UserSummary[]>(ctx, CORE, `/users${query({ q, limit: 8 })}`);
+
+// ---- booth-core: module registry (read-only; used for the Database deep links) -----------
+
+/** GET /api/modules (contracts/core-platform-api.md): every module registered with core.
+ *  Used only to decide whether to show the "Preview rows"/"Open in SQL console" links on a
+ *  format: "postgres" dataset — there's nothing to link to if booth-database isn't installed. */
+export const listModules = (ctx: ApiContext) => request<ModuleSummary[]>(ctx, CORE, "/modules");
 
 // ---- booth-storage: location picker and live check -----------------------------
 

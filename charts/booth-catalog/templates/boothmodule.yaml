@@ -39,12 +39,15 @@ spec:
   # which is how the dashboard subscription silently failed before this was declared.
   #
   # table.* (ADR 0085): booth-lakehouse's Iceberg table lifecycle, indexed as format: "iceberg"
-  # Datasets. Its own Subscriber/durable-consumer, but the same rule applies — omit it here and
-  # that subscription is denied at the bus, not just left unconfigured.
+  # Datasets. database.table.* (ADR 0116): booth-database's workspace-database table lifecycle,
+  # indexed as format: "postgres" Datasets with source: "auto". Each has its own
+  # Subscriber/durable-consumer, but the same rule applies — omit one here and that
+  # subscription is denied at the bus, not just left unconfigured.
   events:
     subscribe:
       - dashboard.*
       - table.*
+      - database.table.*
   {{- end }}
   serviceRef:
     name: {{ include "booth-catalog.fullname" . }}

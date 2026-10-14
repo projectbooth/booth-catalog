@@ -67,9 +67,17 @@ var (
 	// a code version label already published).
 	ErrExists = errors.New("already exists")
 	// ErrManagedExternally means the asset is written only by the module that publishes events
-	// about it (ADR 0085's Iceberg tables, via booth-lakehouse's table.* events) — the same
-	// reason dashboards have no write API at all. The manual write path refuses to touch it.
+	// about it (ADR 0085's Iceberg tables, via booth-lakehouse's table.* events; ADR 0116's
+	// auto-discovered Postgres tables, via booth-database's database.table.* events) — the
+	// same reason dashboards have no write API at all. The manual write path refuses to touch
+	// it, with one exception: ADR 0116 lets an owner delete a missing auto row by hand, which
+	// uses ErrForbidden below instead when the caller isn't one.
 	ErrManagedExternally = errors.New("managed by the publishing module; not editable here")
+	// ErrForbidden means the caller's workspace role doesn't permit this specific write, even
+	// though the route's own editor-or-owner gate let the request through (ADR 0048) — a
+	// narrower, asset-specific rule the route-level gate doesn't express. ADR 0116: deleting a
+	// missing auto-discovered Postgres row requires the owner role, not just editor.
+	ErrForbidden = errors.New("your workspace role does not permit this")
 )
 
 // ValidationError is a request the caller can fix. Field names the offending JSON field

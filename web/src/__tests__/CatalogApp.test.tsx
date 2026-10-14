@@ -392,6 +392,92 @@ describe("dataset detail", () => {
       expect(await screen.findByLabelText(/^Backend/)).toBeInTheDocument();
     });
   });
+
+  // ADR 0116: booth-database's database.table.* events auto-discover tables as Source: "auto"
+  // rows, read-only here except that an owner may delete a Missing one by hand.
+  describe("auto-discovered Postgres tables (ADR 0116)", () => {
+    const autoDs = dataset({
+      format: "postgres",
+      location: { backendId: "", path: "" },
+      postgresTable: { schema: "nfl_data", name: "players" },
+      source: "auto",
+      kind: "table",
+      approxRows: 1696,
+    });
+
+    it("shows kind and approximate rows, and the Database module's deep links when it's installed", async () => {
+      mockFetch({
+        [`GET ${CAT}/datasets/ds-1`]: { json: autoDs },
+        [`GET ${CAT}/datasets/ds-1/lineage`]: { json: { dashboards: [] } },
+        [`GET ${CORE}/modules`]: { json: [{ id: "database" }] },
+      });
+      renderApp("/catalog/data/ds-1", "owner");
+      await screen.findByRole("heading", { name: "orders" });
+      expect(screen.getByText("table")).toBeInTheDocument();
+      expect(screen.getByText("about 1,696 rows")).toBeInTheDocument();
+
+      const preview = await screen.findByRole("link", { name: "Preview rows" });
+      expect(preview).toHaveAttribute("href", "/database/tables/nfl_data/players/preview");
+      expect(screen.getByRole("link", { name: "Open in SQL console" })).toHaveAttribute("href", "/database/sql?schema=nfl_data&table=players");
+
+      // Read-only through the write API, even for an owner, while the table is still present.
+      expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    });
+
+    it("hides the deep links when the Database module isn't installed", async () => {
+      mockFetch({
+        [`GET ${CAT}/datasets/ds-1`]: { json: autoDs },
+        [`GET ${CAT}/datasets/ds-1/lineage`]: { json: { dashboards: [] } },
+        [`GET ${CORE}/modules`]: { json: [] },
+      });
+      renderApp("/catalog/data/ds-1", "owner");
+      await screen.findByRole("heading", { name: "orders" });
+      await waitFor(() => expect(screen.queryByRole("link", { name: "Preview rows" })).not.toBeInTheDocument());
+      expect(screen.queryByRole("link", { name: "Open in SQL console" })).not.toBeInTheDocument();
+    });
+
+    it("hides the deep links when the module registry can't be reached", async () => {
+      mockFetch({
+        [`GET ${CAT}/datasets/ds-1`]: { json: autoDs },
+        [`GET ${CAT}/datasets/ds-1/lineage`]: { json: { dashboards: [] } },
+        // GET /api/modules deliberately unrouted: mockFetch answers it 404.
+      });
+      renderApp("/catalog/data/ds-1", "owner");
+      await screen.findByRole("heading", { name: "orders" });
+      await waitFor(() => expect(screen.queryByRole("link", { name: "Preview rows" })).not.toBeInTheDocument());
+    });
+
+    it("shows a greyed Missing state, and only an owner may delete it", async () => {
+      const missingDs = dataset({ ...autoDs, missing: true });
+      mockFetch({
+        [`GET ${CAT}/datasets/ds-1`]: { json: missingDs },
+        [`GET ${CAT}/datasets/ds-1/lineage`]: { json: { dashboards: [] } },
+        [`GET ${CORE}/modules`]: { json: [] },
+      });
+      renderApp("/catalog/data/ds-1", "editor");
+      await screen.findByRole("heading", { name: "orders" });
+      expect(screen.getByText("Missing from the database")).toBeInTheDocument();
+      // An editor may not delete it — only Service.Delete's isOwner exception permits that.
+      expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+
+      cleanup();
+      const m = mockFetch({
+        [`GET ${CAT}/datasets/ds-1`]: { json: missingDs },
+        [`GET ${CAT}/datasets/ds-1/lineage`]: { json: { dashboards: [] } },
+        [`GET ${CORE}/modules`]: { json: [] },
+        [`DELETE ${CAT}/datasets/ds-1`]: { status: 204 },
+        [`GET ${CAT}/datasets`]: { json: page([]) },
+        [`GET ${CAT}/tags`]: { json: { tags: [] } },
+      });
+      renderApp("/catalog/data/ds-1", "owner");
+      await screen.findByRole("heading", { name: "orders" });
+      await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+      await userEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
+      await waitFor(() => expect(window.location.pathname).toBe("/catalog/data"));
+      expect(m.called("DELETE", `${CAT}/datasets/ds-1`)).toHaveLength(1);
+    });
+  });
 });
 
 describe("code", () => {

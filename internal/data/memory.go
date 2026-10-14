@@ -37,6 +37,10 @@ func clone(d Dataset) Dataset {
 		t := *d.PostgresTable
 		d.PostgresTable = &t
 	}
+	if d.ApproxRows != nil {
+		n := *d.ApproxRows
+		d.ApproxRows = &n
+	}
 	return d
 }
 
@@ -265,6 +269,79 @@ func (m *MemoryStore) ApplyTable(_ context.Context, u TableUpsert) (bool, error)
 		delete(m.tombstoned[u.Workspace], d.ID)
 	}
 	m.byWS[u.Workspace][d.ID] = clone(d)
+	return true, nil
+}
+
+// findPostgresTable returns the live row for (schema, name), hand-registered or auto, or nil.
+// Unlike findTable, there is no tombstoned/missing distinction to skip: a Missing row is a
+// perfectly normal match here, since ADR 0116 keeps it visible and mergeable.
+func (m *MemoryStore) findPostgresTable(ws, schema, name string) *Dataset {
+	for _, d := range m.byWS[ws] {
+		if d.Format == FormatPostgres && d.PostgresTable != nil && d.PostgresTable.Schema == schema && d.PostgresTable.Name == name {
+			c := clone(d)
+			return &c
+		}
+	}
+	return nil
+}
+
+func (m *MemoryStore) ApplyPostgresTable(_ context.Context, u PostgresTableUpsert) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur := m.findPostgresTable(u.Workspace, u.Schema, u.Name)
+	if cur != nil && cur.UpdatedAt.After(u.At) {
+		return false, nil // stale
+	}
+
+	m.ensureWorkspace(u.Workspace)
+	var d Dataset
+	if cur != nil {
+		d = *cur // merge: Name, Description, Tags, Owner and Source all stay as they are
+	} else {
+		dname := postgresDatasetName(u.Schema, u.Name)
+		if m.nameTaken(u.Workspace, dname, "") {
+			return false, asset.ErrExists
+		}
+		d = Dataset{
+			ID: u.NewID, Workspace: u.Workspace, Name: dname,
+			Tags: []string{}, CreatedAt: u.ReceivedAt,
+			Format: FormatPostgres, Source: SourceAuto,
+			PostgresTable: &PostgresTableRef{Schema: u.Schema, Name: u.Name},
+		}
+	}
+	d.Schema, d.Kind, d.ApproxRows, d.Missing = u.Columns, u.Kind, u.ApproxRows, false
+	d.UpdatedAt = u.At
+	m.byWS[u.Workspace][d.ID] = clone(d)
+	return true, nil
+}
+
+func (m *MemoryStore) RemovePostgresTable(_ context.Context, ws, schema, name string, at time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur := m.findPostgresTable(ws, schema, name)
+	if cur != nil && cur.UpdatedAt.After(at) {
+		return false, nil // stale
+	}
+
+	m.ensureWorkspace(ws)
+	var d Dataset
+	if cur != nil {
+		d = *cur
+	} else {
+		dname := postgresDatasetName(schema, name)
+		if m.nameTaken(ws, dname, "") {
+			return false, asset.ErrExists
+		}
+		d = Dataset{
+			ID: asset.NewID(), Workspace: ws, Name: dname,
+			Schema: []Column{}, Tags: []string{}, CreatedAt: at,
+			Format: FormatPostgres, Source: SourceAuto,
+			PostgresTable: &PostgresTableRef{Schema: schema, Name: name},
+		}
+	}
+	d.Missing = true
+	d.UpdatedAt = at
+	m.byWS[ws][d.ID] = clone(d)
 	return true, nil
 }
 
